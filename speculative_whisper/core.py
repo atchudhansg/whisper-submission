@@ -168,7 +168,74 @@ class SpeculativeWhisper:
                     len(output.tokens),
                     output.acceptance_rate,
                 )
-                results.append(output.text)
+                results.append(output)
+
+        outputs = [r for r in results]
+        if single_input:
+            return outputs[0].text
+        return [o.text for o in outputs]
+
+    def transcribe_verbose(
+        self,
+        audio: Union[str, Path, List[Union[str, Path]]],
+        max_tokens: int = 200,
+        batch_size: int = 1,
+        use_speculative: bool = True,
+        draft_k: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        sampling_strategy: Optional[str] = None,
+    ):
+        """Like ``transcribe()``, but returns full ``DecodingOutput`` objects.
+
+        Returns:
+            A single ``DecodingOutput`` (if one file given) or a list of them.
+            Each has ``.text``, ``.tokens``, ``.acceptance_rate``,
+            ``.num_drafted``, ``.num_accepted``.
+        """
+        from speculative_whisper.audio import compute_mel, load_audio
+        from speculative_whisper.decoding import baseline_decode, speculative_decode
+
+        single_input = isinstance(audio, (str, Path))
+        paths = [audio] if single_input else list(audio)
+
+        overrides = {"max_tokens": max_tokens}
+        if draft_k is not None:
+            overrides["draft_k"] = draft_k
+        if temperature is not None:
+            overrides["temperature"] = temperature
+        if top_p is not None:
+            overrides["top_p"] = top_p
+        if sampling_strategy is not None:
+            overrides["sampling_strategy"] = sampling_strategy
+
+        call_config = self.config.model_copy(update=overrides)
+        results = []
+
+        for batch_start in range(0, len(paths), batch_size):
+            for p in paths[batch_start : batch_start + batch_size]:
+                audio_data = load_audio(p)
+                mel = compute_mel(
+                    audio_data,
+                    device=self.model_pair.device,
+                    dtype=self.model_pair.dtype,
+                    n_mels=self.model_pair.final.dims.n_mels,
+                ).unsqueeze(0)
+
+                draft_n_mels = self.model_pair.draft.dims.n_mels
+                final_n_mels = self.model_pair.final.dims.n_mels
+                mel_draft = (
+                    compute_mel(audio_data, device=self.model_pair.device,
+                                dtype=self.model_pair.dtype, n_mels=draft_n_mels).unsqueeze(0)
+                    if draft_n_mels != final_n_mels else None
+                )
+
+                if use_speculative:
+                    output = speculative_decode(self.model_pair, mel, call_config, mel_draft=mel_draft)
+                else:
+                    output = baseline_decode(self.model_pair, mel, call_config)
+
+                results.append(output)
 
         return results[0] if single_input else results
 

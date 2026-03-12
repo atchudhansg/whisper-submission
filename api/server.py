@@ -159,8 +159,8 @@ async def transcribe(
                 tmp.write(content)
                 temp_paths.append(Path(tmp.name))
 
-        # Transcribe all files in one batch.
-        texts = _whisper_instance.transcribe(
+        # Transcribe all files — use verbose path to get acceptance_rate and token count.
+        outputs = _whisper_instance.transcribe_verbose(
             audio=[str(p) for p in temp_paths],
             max_tokens=max_tokens,
             batch_size=batch_size,
@@ -170,18 +170,20 @@ async def transcribe(
             top_p=top_p,
             sampling_strategy=sampling_strategy,
         )
+        if not isinstance(outputs, list):
+            outputs = [outputs]
 
-        # Build results (for now, we don't track per-file latency in batch mode).
         elapsed = time.perf_counter() - start_time
         per_file_latency = elapsed / len(files)
 
-        for i, (upload_file, text) in enumerate(zip(files, texts)):
+        for i, (upload_file, out) in enumerate(zip(files, outputs)):
             results.append(
                 TranscriptionItem(
                     file=upload_file.filename or f"file_{i}",
-                    text=text,
+                    text=out.text,
                     latency_s=per_file_latency,
-                    # TODO: Track acceptance rate per file when decoding exposes it.
+                    acceptance_rate=out.acceptance_rate if use_speculative else None,
+                    num_tokens=len(out.tokens) if out.tokens else None,
                 )
             )
 
