@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Union
 
 from speculative_whisper.config import DecodingConfig
+from speculative_whisper.models import ModelPair, load_models
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,9 @@ class SpeculativeWhisper:
     ) -> None:
         """Initialise models and configuration.
 
+        Loads both Whisper models onto the target device, builds the shared
+        tokenizer, and stores the validated configuration.
+
         Args:
             draft_model: Whisper model name for drafting (e.g. ``"tiny"``).
             final_model: Whisper model name for verification (e.g. ``"large-v3"``).
@@ -43,7 +47,30 @@ class SpeculativeWhisper:
                 here (``draft_model``, ``final_model``, ``device``) override the
                 YAML values.
         """
-        raise NotImplementedError("TODO: implement __init__")
+        # Build config — YAML first (if provided), then override with explicit args.
+        if config_path is not None:
+            self.config = DecodingConfig.from_yaml(config_path)
+        else:
+            self.config = DecodingConfig()
+
+        # Explicit constructor args take precedence over YAML values.
+        self.config = self.config.model_copy(
+            update={
+                "draft_model": draft_model,
+                "final_model": final_model,
+                "device": device,
+            }
+        )
+
+        # Load both models onto the resolved device.
+        self.model_pair: ModelPair = load_models(self.config)
+
+        logger.info(
+            "SpeculativeWhisper ready — device=%s, draft=%s, final=%s",
+            self.model_pair.device,
+            self.config.draft_model,
+            self.config.final_model,
+        )
 
     # ------------------------------------------------------------------
     # Transcription
