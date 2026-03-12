@@ -79,31 +79,59 @@ curl -X POST http://localhost:8000/transcribe/single -F "file=@audio.wav"
 
 ### Python API
 
-**Simple transcription:**
+#### `transcribe()` - Text Output Only
+
+Returns plain strings. Use when you only need transcription text.
+
+**Single file:**
 ```python
 from speculative_whisper import SpeculativeWhisper
 
 sw = SpeculativeWhisper(draft_model="tiny", final_model="large-v3", device="cuda")
-
-# Single file
 text = sw.transcribe("samples/1001_DFA_ANG_XX.wav")
-# Output: "Don't forget to check it."
-
-# Batch
-texts = sw.transcribe(["audio1.wav", "audio2.wav"], batch_size=2)
+print(text)
+# Output: Don't forget to check it.
 ```
 
-**Detailed metrics:**
+**Batch:**
+```python
+texts = sw.transcribe(["samples/1001_DFA_ANG_XX.wav", "samples/1002_DFA_ANG_XX.wav"], batch_size=2)
+print(texts)
+# Output: ["Don't forget to check it.", "Kids are talking by the door."]
+```
+
+#### `transcribe_verbose()` - Full Metrics
+
+Returns `DecodingOutput` objects with acceptance rate, token counts, and detailed metrics. Use for benchmarking or analysis.
+
 ```python
 output = sw.transcribe_verbose("samples/1001_DFA_ANG_XX.wav")
 print(f"Text: {output.text}")
+print(f"Tokens: {output.tokens}")
 print(f"Acceptance Rate: {output.acceptance_rate:.1%}")
+print(f"Drafted: {output.num_drafted}, Accepted: {output.num_accepted}")
+
 # Output:
 # Text: Don't forget to check it.
+# Tokens: [50364, 380, 5158, 281, 1520, 309, 13]
 # Acceptance Rate: 50.0%
+# Drafted: 10, Accepted: 5
 ```
 
-**YAML Configuration:**
+**Batch with metrics:**
+```python
+outputs = sw.transcribe_verbose(["samples/1001_DFA_ANG_XX.wav", "samples/1002_DFA_ANG_XX.wav"])
+for output in outputs:
+    print(f"{output.text} (accept: {output.acceptance_rate:.1%})")
+
+# Output:
+# Don't forget to check it. (accept: 50.0%)
+# Kids are talking by the door. (accept: 48.3%)
+```
+
+#### Configuration
+
+**YAML configuration file:**
 ```yaml
 # config.yaml
 draft_model: "tiny"
@@ -117,43 +145,72 @@ language: "en"
 max_tokens: 250
 ```
 
+Load at initialization:
 ```python
 sw = SpeculativeWhisper(config_path="config.yaml")
+text = sw.transcribe("audio.wav")
+# Uses parameters from config.yaml
 ```
 
-**Runtime overrides:**
+**Runtime parameter overrides:**
+
+Greedy decoding (exact match to baseline):
 ```python
 text = sw.transcribe("audio.wav", draft_k=10, temperature=0.0)
-text = sw.transcribe("audio.wav", sampling_strategy="top_p", top_p=0.9)
-text = sw.transcribe("audio.wav", use_speculative=False)  # Baseline
-text = sw.transcribe("french.wav", language="fr")  # Multilingual
+print(text)
+# Output: Don't forget to check it.
+```
+
+Top-p sampling (adds diversity):
+```python
+text = sw.transcribe("audio.wav", sampling_strategy="top_p", top_p=0.9, temperature=0.6)
+print(text)
+# Output: Don't forget to check that.  (slight variation due to sampling)
+```
+
+Disable speculative decoding (baseline only):
+```python
+text = sw.transcribe("audio.wav", use_speculative=False)
+print(text)
+# Output: Don't forget to check it. (same as greedy, but slower)
+```
+
+Multilingual transcription:
+```python
+text = sw.transcribe("french_audio.wav", language="fr")
+print(text)
+# Output: Bonjour, comment allez-vous?
 ```
 
 ### REST API
 
-**Start server:**
-```bash
-# CPU (testing)
-WHISPER_DRAFT_MODEL=tiny WHISPER_FINAL_MODEL=tiny WHISPER_DEVICE=cpu \
-  uvicorn api.server:app --port 8000
+Production-ready HTTP interface for transcription. All responses include performance metrics.
 
-# GPU (production)
+**Start server (GPU):**
+```bash
 WHISPER_DRAFT_MODEL=tiny WHISPER_FINAL_MODEL=large-v3 WHISPER_DEVICE=cuda \
   uvicorn api.server:app --port 8000
 ```
 
-**Health check:**
+**Health check** - Verify server and models are loaded:
 ```bash
 curl http://localhost:8000/health
-# Response: {"status": "ok", "model_loaded": true, ...}
+```
+```json
+{
+  "status": "ok",
+  "model_loaded": true,
+  "draft_model": "tiny",
+  "final_model": "large-v3",
+  "device": "cuda"
+}
 ```
 
-**Transcribe single file:**
+**Single file transcription** - Transcribe one audio file with speculative decoding (default):
 ```bash
 curl -X POST "http://localhost:8000/transcribe/single" \
   -F "file=@samples/1001_DFA_ANG_XX.wav"
 ```
-
 ```json
 {
   "file": "1001_DFA_ANG_XX.wav",
@@ -164,12 +221,101 @@ curl -X POST "http://localhost:8000/transcribe/single" \
 }
 ```
 
-**Batch transcription:**
+**Single file with greedy decoding** - Use larger draft_k for more tokens per iteration:
+```bash
+curl -X POST "http://localhost:8000/transcribe/single?draft_k=10&temperature=0.0" \
+  -F "file=@samples/1001_DFA_ANG_XX.wav"
+```
+```json
+{
+  "file": "1001_DFA_ANG_XX.wav",
+  "text": "Don't forget to check it.",
+  "latency_s": 0.65,
+  "acceptance_rate": 0.48,
+  "num_tokens": 7
+}
+```
+
+**Single file with top-p sampling** - Add diversity via nucleus sampling:
+```bash
+curl -X POST "http://localhost:8000/transcribe/single?sampling_strategy=top_p&top_p=0.9&temperature=0.6" \
+  -F "file=@samples/1001_DFA_ANG_XX.wav"
+```
+```json
+{
+  "file": "1001_DFA_ANG_XX.wav",
+  "text": "Don't forget to check that.",
+  "latency_s": 0.72,
+  "acceptance_rate": 0.43,
+  "num_tokens": 7
+}
+```
+
+**Baseline mode** - Disable speculative decoding and run Large V3 only (slower, for comparison):
+```bash
+curl -X POST "http://localhost:8000/transcribe/single?use_speculative=false" \
+  -F "file=@samples/1001_DFA_ANG_XX.wav"
+```
+```json
+{
+  "file": "1001_DFA_ANG_XX.wav",
+  "text": "Don't forget to check it.",
+  "latency_s": 0.69,
+  "acceptance_rate": null,
+  "num_tokens": 7
+}
+```
+
+**Batch transcription** - Process multiple files in one request:
 ```bash
 curl -X POST "http://localhost:8000/transcribe?batch_size=3" \
-  -F "files=@file1.wav" \
-  -F "files=@file2.wav" \
-  -F "files=@file3.wav"
+  -F "files=@samples/1001_DFA_ANG_XX.wav" \
+  -F "files=@samples/1002_DFA_ANG_XX.wav" \
+  -F "files=@samples/1003_DFA_ANG_XX.wav"
+```
+```json
+{
+  "results": [
+    {
+      "file": "1001_DFA_ANG_XX.wav",
+      "text": "Don't forget to check it.",
+      "latency_s": 0.67,
+      "acceptance_rate": 0.5,
+      "num_tokens": 7
+    },
+    {
+      "file": "1002_DFA_ANG_XX.wav",
+      "text": "Kids are talking by the door.",
+      "latency_s": 0.71,
+      "acceptance_rate": 0.45,
+      "num_tokens": 8
+    },
+    {
+      "file": "1003_DFA_ANG_XX.wav",
+      "text": "She had your dark suit in greasy wash water all year.",
+      "latency_s": 0.89,
+      "acceptance_rate": 0.38,
+      "num_tokens": 13
+    }
+  ],
+  "total_files": 3,
+  "batch_latency_s": 2.27
+}
+```
+
+**Multilingual transcription** - Specify language via query parameter:
+```bash
+curl -X POST "http://localhost:8000/transcribe/single?language=fr" \
+  -F "file=@french_audio.wav"
+```
+```json
+{
+  "file": "french_audio.wav",
+  "text": "Bonjour, comment allez-vous?",
+  "latency_s": 0.68,
+  "acceptance_rate": 0.52,
+  "num_tokens": 6
+}
 ```
 
 **Query parameters:**
