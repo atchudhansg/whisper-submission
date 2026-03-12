@@ -459,11 +459,140 @@ api/
 samples/                 # 30 CREMA audio clips (IDs 1001–1030)
 configs/
 └── default.yaml         # Default configuration template
-benchmark.py             # Performance test script
-examples/
-└── api_client_example.py
-tests/
-└── test_evaluation.py
+benchmark.py             # Performance evaluation script
+tests/                   # Comprehensive test suite
+├── conftest.py          # Pytest fixtures
+├── test_smoke.py        # Model loading & diagnostics
+├── test_e2e.py          # End-to-end transcription
+├── test_decoding.py     # Rejection sampling logic
+├── test_audio.py        # Audio preprocessing
+├── test_core_api.py     # API validation & config
+├── test_evaluation.py   # WER computation
+└── test_integration.py   # Full integration tests
+```
+
+---
+
+## Testing
+
+Comprehensive test suite covering unit tests, integration tests, and benchmarking.
+
+### Test Scripts
+
+#### Unit Tests
+
+**test_core_api.py** — Configuration validation and parameter bounds
+- Tests for `DecodingConfig` parameter validation  
+- YAML serialization/deserialization
+- Device auto-detection
+- Decoding parameter ranges (draft_k, temperature, top_p)
+
+```bash
+pytest tests/test_core_api.py -v
+```
+
+**test_audio.py** — Audio preprocessing pipeline
+- Audio loading and resampling to 16 kHz
+- Mel spectrogram computation (80 and 128 bins)
+- Batch mel processing
+- Edge cases and format validation
+
+```bash
+pytest tests/test_audio.py -v
+```
+
+**test_decoding.py** — Rejection sampling algorithm
+- Draft step token generation
+- Accept/reject logic correctness
+- Bonus token generation
+- Determinism in greedy mode
+- Consistency with baseline Large V3
+
+```bash
+pytest tests/test_decoding.py -v
+```
+
+**test_evaluation.py** — WER metric computation
+- Single-utterance WER (identical, 1 error, empty)
+- Batch WER corpus-level evaluation
+- Case insensitivity
+- Edge cases (empty strings, mismatched lengths)
+
+```bash
+pytest tests/test_evaluation.py -v
+```
+
+#### Integration Tests
+
+**test_integration.py** — End-to-end with real models and audio
+- Single file transcription and batch processing
+- `transcribe()` vs `transcribe_verbose()` outputs
+- Greedy determinism validation
+- Speculative vs baseline consistency
+- Acceptance rate in valid range
+- Multilingual configuration
+- Error handling (missing files, invalid parameters)
+
+```bash
+pytest tests/test_integration.py -v -m integration
+```
+
+#### Diagnostic Tests
+
+**test_smoke.py** — Verify model loading and system diagnostics
+- Loads both draft and final models
+- Reports GPU memory, device type, model sizes
+- Measures loading time
+- Validates model parameters and dtype
+
+```bash
+python -m tests.test_smoke --draft tiny --final large-v3 --device cuda
+```
+
+**test_e2e.py** — End-to-end transcription test
+- Transcribes test audio
+- Compares speculative vs baseline latency
+- Prints acceptance rate and token counts
+- Validates output matches across methods
+
+```bash
+python -m tests.test_e2e --draft tiny --final tiny --device cpu
+```
+
+### Performance Evaluation
+
+**benchmark.py** — Comprehensive benchmarking suite (470 lines, real-world testing)
+
+Benchmark on sample audio:
+```bash
+python benchmark.py samples/
+```
+
+Benchmark with custom audio directory:
+```bash
+python benchmark.py /path/to/audio/dir/ --device cuda --draft-k 5
+```
+
+Save results to JSON:
+```bash
+python benchmark.py samples/ --output-json results.json
+```
+
+### Running All Tests
+
+Unit + integration + diagnostics:
+```bash
+pytest tests/ -v
+```
+
+With coverage report:
+```bash
+pytest tests/ --cov=speculative_whisper --cov-report=html
+```
+
+Fast tests only (skips extended integration tests):
+```bash
+pytest tests/ -v -m "not integration"
 ```
 
 ---
