@@ -151,12 +151,32 @@ Whisper supports 99+ languages via ISO 639-1 codes:
 
 ## Benchmark
 
+**Built-in evaluation script:**
 ```bash
 pip install jiwer
 python benchmark.py samples/
 ```
 
-Runs three passes (baseline, speculative greedy, speculative top-p) on all files and prints per-sample latency, speedup, acceptance rate, WER, and aggregate statistics.
+**Programmatic evaluation using WER functions:**
+```python
+from speculative_whisper.evaluation import benchmark, compute_wer, compute_wer_batch
+from speculative_whisper import SpeculativeWhisper
+
+# Load model and run comprehensive benchmark
+sw = SpeculativeWhisper(draft_model="tiny", final_model="large-v3")
+audio_paths = ["audio1.wav", "audio2.wav"]
+references = ["hello world", "goodbye moon"]
+
+spec_result, base_result = benchmark(sw.model_pair, audio_paths, references, sw.config)
+print(spec_result.summary())
+print(base_result.summary())
+
+# Individual WER computation
+wer = compute_wer("hello world", "hello earth")  # 0.5 (1 error / 2 words)
+corpus_wer = compute_wer_batch(references, hypotheses)
+```
+
+The benchmark runs three passes (baseline, speculative greedy, speculative top-p) on all files and prints per-sample latency, speedup, acceptance rate, WER, and aggregate statistics.
 
 ---
 
