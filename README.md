@@ -39,16 +39,31 @@ The large model's probability distribution is preserved exactly—mathematically
 
 ### 1. Installation
 
+Clone the repository:
 ```bash
 git clone https://github.com/atchudhansg/whisper-submission.git
 cd whisper-submission
+```
+
+Create a virtual environment (isolates dependencies):
+```bash
+python -m venv .venv
+source .venv/bin/activate  # macOS/Linux
+# or: .venv\Scripts\activate  # Windows
+```
+
+Install from `pyproject.toml` (pulls exact dependencies):
+```bash
+pip install --upgrade pip
 pip install -e ".[dev]"
 ```
+
+This installs the package in development mode with all dependencies (torch, openai-whisper, fastapi, pydantic, jiwer) pinned to exact versions. The `.venv/` folder stays isolated—system Python is untouched, ensuring reproducible setup.
 
 ### 2. Benchmark Your Hardware (5 min)
 
 ```bash
-pip install jiwer
+# Run from your activated venv
 python benchmark.py samples/
 ```
 
@@ -188,11 +203,13 @@ print(text)
 
 Production-ready HTTP interface for transcription. All responses include performance metrics.
 
-**Start server (GPU):**
+**Start server (GPU, from activated venv):**
 ```bash
 WHISPER_DRAFT_MODEL=tiny WHISPER_FINAL_MODEL=large-v3 WHISPER_DEVICE=cuda \
   uvicorn api.server:app --port 8000
 ```
+
+(If you haven't activated the venv in this terminal: `source .venv/bin/activate` first.)
 
 **Health check** - Verify server and models are loaded:
 ```bash
