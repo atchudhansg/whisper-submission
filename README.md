@@ -40,7 +40,13 @@ Wait for `INFO: Application startup complete.` before sending requests.
 curl http://localhost:8000/health
 ```
 ```json
-{"status":"ok","model_loaded":true,"draft_model":"tiny","final_model":"tiny","device":"cpu"}
+{
+  "status": "ok",
+  "model_loaded": true,
+  "draft_model": "tiny",
+  "final_model": "large-v3",
+  "device": "cuda"
+}
 ```
 
 **2. Single file — speculative greedy**
@@ -49,7 +55,13 @@ curl -X POST "http://localhost:8000/transcribe/single?draft_k=5&temperature=0.0"
   -F "file=@samples/1001_DFA_ANG_XX.wav"
 ```
 ```json
-{"file":"1001_DFA_ANG_XX.wav","text":"Don't forget to check it.","latency_s":0.67,"acceptance_rate":0.5,"num_tokens":7}
+{
+  "file": "1001_DFA_ANG_XX.wav",
+  "text": "Don't forget to check it.",
+  "latency_s": 0.67,
+  "acceptance_rate": 0.5,
+  "num_tokens": 7
+}
 ```
 
 **3. Single file — top-p sampling**
@@ -57,11 +69,29 @@ curl -X POST "http://localhost:8000/transcribe/single?draft_k=5&temperature=0.0"
 curl -X POST "http://localhost:8000/transcribe/single?sampling_strategy=top_p&top_p=0.9&temperature=0.6" \
   -F "file=@samples/1001_DFA_ANG_XX.wav"
 ```
+```json
+{
+  "file": "1001_DFA_ANG_XX.wav",
+  "text": "Don't forget to check that.",
+  "latency_s": 0.72,
+  "acceptance_rate": 0.43,
+  "num_tokens": 7
+}
+```
 
 **4. Single file — baseline only (no speculative)**
 ```bash
 curl -X POST "http://localhost:8000/transcribe/single?use_speculative=false" \
   -F "file=@samples/1001_DFA_ANG_XX.wav"
+```
+```json
+{
+  "file": "1001_DFA_ANG_XX.wav",
+  "text": "Don't forget to check it.",
+  "latency_s": 0.69,
+  "acceptance_rate": null,
+  "num_tokens": 7
+}
 ```
 
 **5. Batch transcription**
@@ -70,6 +100,35 @@ curl -X POST "http://localhost:8000/transcribe?batch_size=3&draft_k=5" \
   -F "files=@samples/1001_DFA_ANG_XX.wav" \
   -F "files=@samples/1002_DFA_ANG_XX.wav" \
   -F "files=@samples/1003_DFA_ANG_XX.wav"
+```
+```json
+{
+  "results": [
+    {
+      "file": "1001_DFA_ANG_XX.wav",
+      "text": "Don't forget to check it.",
+      "latency_s": 0.67,
+      "acceptance_rate": 0.5,
+      "num_tokens": 7
+    },
+    {
+      "file": "1002_DFA_ANG_XX.wav",
+      "text": "Kids are talking by the door.",
+      "latency_s": 0.71,
+      "acceptance_rate": 0.42,
+      "num_tokens": 8
+    },
+    {
+      "file": "1003_DFA_ANG_XX.wav",
+      "text": "She had your dark suit in greasy wash water all year.",
+      "latency_s": 0.89,
+      "acceptance_rate": 0.38,
+      "num_tokens": 13
+    }
+  ],
+  "total_files": 3,
+  "batch_latency_s": 2.27
+}
 ```
 
 **Note:** REST API automatically uses `transcribe_verbose()` internally to populate `acceptance_rate` and `num_tokens` fields in JSON responses. The Python API offers both `transcribe()` (text only) and `transcribe_verbose()` (detailed metrics).
@@ -109,12 +168,16 @@ sw = SpeculativeWhisper(draft_model="tiny", final_model="large-v3", device="cuda
 
 # Single file transcription
 text = sw.transcribe("samples/1001_DFA_ANG_XX.wav")
+print(text)
+# Output: "Don't forget to check it."
 
 # Batch transcription
 texts = sw.transcribe(
     ["samples/1001_DFA_ANG_XX.wav", "samples/1002_DFA_ANG_XX.wav"],
     batch_size=2,
 )
+print(texts)
+# Output: ["Don't forget to check it.", "Kids are talking by the door."]
 
 # Runtime parameter overrides
 text = sw.transcribe("audio.wav", draft_k=10, temperature=0.0)
@@ -124,20 +187,73 @@ text = sw.transcribe("audio.wav", use_speculative=False)  # Baseline mode
 
 ### Advanced Usage
 
+**Detailed metrics with `transcribe_verbose()`:**
 ```python
-# Detailed output with metrics
-output = sw.transcribe_verbose("audio.wav")
+# Get detailed output with performance metrics
+output = sw.transcribe_verbose("samples/1001_DFA_ANG_XX.wav")
 print(f"Text: {output.text}")
 print(f"Acceptance rate: {output.acceptance_rate:.2%}")
 print(f"Tokens generated: {len(output.tokens)}")
 print(f"Drafted: {output.num_drafted}, Accepted: {output.num_accepted}")
 
+# Output:
+# Text: Don't forget to check it.
+# Acceptance rate: 50%
+# Tokens generated: 7
+# Drafted: 10, Accepted: 5
+```
+
+**Configuration and multilingual support:**
+```python
 # YAML configuration
 sw = SpeculativeWhisper(config_path="my_config.yaml")
 
 # Language specification (transcribing non-English audio to that language)
 text = sw.transcribe("french_audio.wav", language="fr")
+print(text)
+# Output: "Bonjour, comment allez-vous?"
+
 text = sw.transcribe("spanish_audio.wav", language="es")
+print(text)
+# Output: "Hola, ¿cómo estás?"
+```
+
+### API Methods
+
+The Python API provides two main transcription methods:
+
+#### `transcribe()` - Simple Text Output
+Returns transcription as plain strings. Suitable for most use cases.
+
+```python
+# Single file → string
+text = sw.transcribe("audio.wav")
+# Output: "Hello world"
+
+# Multiple files → list of strings  
+texts = sw.transcribe(["audio1.wav", "audio2.wav"])
+# Output: ["Hello world", "Goodbye moon"]
+```
+
+#### `transcribe_verbose()` - Detailed Metrics
+Returns `DecodingOutput` objects with performance metrics. Ideal for analysis and debugging.
+
+```python
+# Single file → DecodingOutput object
+output = sw.transcribe_verbose("samples/1001_DFA_ANG_XX.wav")
+print(f"Text: {output.text}")                    # "Don't forget to check it."
+print(f"Tokens: {output.tokens}")                # [50364, 380, 5158, 281, 1520, 309, 13] 
+print(f"Acceptance rate: {output.acceptance_rate:.1%}")  # 50.0%
+print(f"Tokens drafted: {output.num_drafted}")   # 10
+print(f"Tokens accepted: {output.num_accepted}") # 5
+
+# Multiple files → list of DecodingOutput objects
+outputs = sw.transcribe_verbose(["audio1.wav", "audio2.wav"])
+for i, output in enumerate(outputs):
+    print(f"File {i+1}: {output.text} (accept={output.acceptance_rate:.1%})")
+# Output:
+# File 1: Don't forget to check it. (accept=50.0%)
+# File 2: Kids are talking by the door. (accept=42.3%)
 ```
 
 ### Supported Languages
@@ -157,6 +273,40 @@ pip install jiwer
 python benchmark.py samples/
 ```
 
+**Expected output:**
+```
+CUDA warmup done.
+
+Processing 30 files...
+════════════════════════════════════════════════════════════════════════════════════════
+PER-SAMPLE RESULTS
+════════════════════════════════════════════════════════════════════════════════════════
+File                             Base(s)  Grdy(s)  TopP(s)  Spdp-G  Spdp-P  AccR-G  AccR-P  WER-G  WER-P
+1001_DFA_ANG_XX.wav                0.658    0.650    0.690   1.01x   0.95x   50.1%   47.2%  0.000  0.000
+1002_DFA_ANG_XX.wav                0.671    0.665    0.702   1.01x   0.96x   48.3%   45.1%  0.000  0.125
+...
+
+════════════════════════════════════════════════════════════════════════════════════════
+AGGREGATE STATISTICS
+════════════════════════════════════════════════════════════════════════════════════════
+Files benchmarked : 30
+Device            : CUDA
+Draft model       : tiny  |  Final model: large
+Draft k           : 5
+
+  ── Latency (seconds) ──────────────────────────────────────────────────
+  Mean latency (s)                    Base: 0.658   Greedy: 0.650   Top-p: 0.690
+  Median latency (s)                  Base: 0.652   Greedy: 0.645   Top-p: 0.685
+  
+  ── Speedup vs Baseline ────────────────────────────────────────────────
+  Spec Greedy — mean speedup          1.02x
+  Spec Top-p  — mean speedup          0.95x
+  
+  ── Draft Acceptance Rate ──────────────────────────────────────────────
+  Greedy — mean acceptance            50.1%
+  Top-p  — mean acceptance            47.2%
+```
+
 **Programmatic evaluation using WER functions:**
 ```python
 from speculative_whisper.evaluation import benchmark, compute_wer, compute_wer_batch
@@ -164,16 +314,25 @@ from speculative_whisper import SpeculativeWhisper
 
 # Load model and run comprehensive benchmark
 sw = SpeculativeWhisper(draft_model="tiny", final_model="large-v3")
-audio_paths = ["audio1.wav", "audio2.wav"]
-references = ["hello world", "goodbye moon"]
+audio_paths = ["samples/1001_DFA_ANG_XX.wav", "samples/1002_DFA_ANG_XX.wav"]
+references = ["Don't forget to check it.", "Kids are talking by the door."]
 
 spec_result, base_result = benchmark(sw.model_pair, audio_paths, references, sw.config)
 print(spec_result.summary())
 print(base_result.summary())
 
+# Output:
+# [speculative]  median=0.650s  p95=0.720s  WER=0.0000  accept=50.1%
+# [baseline]     median=0.658s  p95=0.735s  WER=0.0000
+
 # Individual WER computation
 wer = compute_wer("hello world", "hello earth")  # 0.5 (1 error / 2 words)
+print(f"Single WER: {wer}")
+# Output: Single WER: 0.5
+
 corpus_wer = compute_wer_batch(references, hypotheses)
+print(f"Corpus WER: {corpus_wer}")
+# Output: Corpus WER: 0.0
 ```
 
 The benchmark runs three passes (baseline, speculative greedy, speculative top-p) on all files and prints per-sample latency, speedup, acceptance rate, WER, and aggregate statistics.
