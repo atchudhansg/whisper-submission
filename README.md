@@ -170,20 +170,6 @@ The output distribution is provably identical to standard Large V3 decoding.
 
 ---
 
-## Command Line Interface (Not Yet Implemented)
-
-The CLI parser is defined but not connected to execution logic:
-
-```bash
-# Will be available in future versions:
-python -m speculative_whisper.cli --audio samples/1001_DFA_ANG_XX.wav --draft-model tiny --final-model large-v3
-python -m speculative_whisper.cli --audio-dir samples/ --batch-size 5 --output results/
-```
-
-Currently raises `NotImplementedError("TODO: implement CLI dispatch logic")`.
-
----
-
 ## Configuration
 
 ### YAML Configuration Files
@@ -229,8 +215,6 @@ All parameters can be set at initialization or overridden per call.
 
 - **Beam search decoding:** Configuration supports `beam_size` parameter but beam search algorithm is not implemented
 - **Translation task:** Models can be configured for translation (non-English → English) but currently hardcoded to transcription
-- **CLI execution:** Argument parser exists but main execution loop raises NotImplementedError
-- **WER evaluation functions:** Stubs exist in `evaluation.py` but not implemented
 
 ---
 
@@ -270,9 +254,7 @@ Greedy mode produces bit-exact outputs. Speedup is marginal on short clips with 
 - **Language/task flexibility:** Translation task (non-English → English) is configurable but hardcoded to transcription in model loading.
 
 ### Missing Features
-- **CLI execution:** Command-line interface is parsed but not implemented (`NotImplementedError` in main())
 - **Beam search:** Configuration supports `beam_size` but beam search decoding algorithm is not implemented  
-- **WER evaluation:** Word Error Rate functions are stubbed in `evaluation.py` but not implemented
 - **Advanced batching:** Current batch processing is sequential; parallel GPU batch decoding not implemented
 - **Long-form audio:** No sliding window or chunking for audio longer than 30 seconds
 
@@ -292,8 +274,7 @@ speculative_whisper/
 ├── audio.py         # Audio preprocessing (load_audio, compute_mel)
 ├── decoding.py      # Speculative decoding algorithm + baseline
 ├── core.py          # SpeculativeWhisper public API (transcribe, transcribe_verbose)
-├── cli.py           # CLI argument parser (main() not implemented)
-└── evaluation.py    # WER computation stubs (not implemented)
+└── evaluation.py    # WER computation utilities for evaluation
 
 api/
 └── server.py        # FastAPI REST server with batch support

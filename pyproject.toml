@@ -46,7 +46,7 @@ dev = [
 ]
 
 [project.scripts]
-speculative-whisper = "speculative_whisper.cli:main"
+# No CLI entry points - use Python API or REST API
 
 [tool.setuptools.packages.find]
 include = ["speculative_whisper*", "api*"]

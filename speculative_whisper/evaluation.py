@@ -61,7 +61,24 @@ def compute_wer(reference: str, hypothesis: str) -> float:
     Returns:
         WER as a float (0.0 = perfect, >1.0 possible for very bad output).
     """
-    raise NotImplementedError("TODO: implement compute_wer")
+    try:
+        import jiwer
+    except ImportError:
+        raise ImportError("jiwer library required for WER computation. Install with: pip install jiwer")
+    
+    # Normalize strings
+    ref = reference.strip().lower() if reference else ""
+    hyp = hypothesis.strip().lower() if hypothesis else ""
+    
+    # Handle edge cases
+    if not ref and not hyp:
+        return 0.0
+    if not ref:
+        return 1.0  # No reference but hypothesis exists
+    if not hyp:
+        return 1.0  # Reference exists but no hypothesis
+    
+    return float(jiwer.wer(ref, hyp))
 
 
 def compute_wer_batch(
@@ -77,7 +94,23 @@ def compute_wer_batch(
     Returns:
         Corpus-level WER as a float.
     """
-    raise NotImplementedError("TODO: implement compute_wer_batch")
+    try:
+        import jiwer
+    except ImportError:
+        raise ImportError("jiwer library required for WER computation. Install with: pip install jiwer")
+    
+    if len(references) != len(hypotheses):
+        raise ValueError(f"Mismatched lengths: {len(references)} references, {len(hypotheses)} hypotheses")
+    
+    if not references:
+        return 0.0
+    
+    # Normalize all strings
+    refs = [ref.strip().lower() if ref else "" for ref in references]
+    hyps = [hyp.strip().lower() if hyp else "" for hyp in hypotheses]
+    
+    # Compute corpus-level WER (concatenates all reference/hypothesis pairs)
+    return float(jiwer.wer(refs, hyps))
 
 
 # =====================================================================
@@ -108,4 +141,94 @@ def benchmark(
     Returns:
         A tuple ``(speculative_result, baseline_result)``.
     """
-    raise NotImplementedError("TODO: implement benchmark")
+    import time
+    from statistics import median
+    
+    from speculative_whisper.audio import compute_mel, load_audio
+    from speculative_whisper.decoding import baseline_decode, speculative_decode
+    
+    if len(audio_paths) != len(references):
+        raise ValueError(f"Mismatched lengths: {len(audio_paths)} audio files, {len(references)} references")
+    
+    spec_latencies = []
+    spec_texts = []
+    spec_acceptance_rates = []
+    
+    base_latencies = []
+    base_texts = []
+    
+    logger.info(f"Benchmarking {len(audio_paths)} audio files...")
+    
+    for i, (audio_path, reference) in enumerate(zip(audio_paths, references)):
+        logger.info(f"Processing {i+1}/{len(audio_paths)}: {audio_path}")
+        
+        # Load audio and compute mel spectrograms
+        audio_data = load_audio(audio_path)
+        mel_final = compute_mel(
+            audio_data,
+            device=model_pair.device,
+            dtype=model_pair.dtype,
+            n_mels=model_pair.final.dims.n_mels,
+        ).unsqueeze(0)
+        
+        # Handle different mel dimensions for draft model
+        draft_n_mels = model_pair.draft.dims.n_mels
+        final_n_mels = model_pair.final.dims.n_mels
+        if draft_n_mels != final_n_mels:
+            mel_draft = compute_mel(
+                audio_data,
+                device=model_pair.device,
+                dtype=model_pair.dtype,
+                n_mels=draft_n_mels,
+            ).unsqueeze(0)
+        else:
+            mel_draft = None
+        
+        # Baseline decoding
+        start_time = time.perf_counter()
+        base_output = baseline_decode(model_pair, mel_final, config)
+        base_latency = time.perf_counter() - start_time
+        
+        base_latencies.append(base_latency)
+        base_texts.append(base_output.text)
+        
+        # Speculative decoding
+        start_time = time.perf_counter()
+        spec_output = speculative_decode(model_pair, mel_final, config, mel_draft=mel_draft)
+        spec_latency = time.perf_counter() - start_time
+        
+        spec_latencies.append(spec_latency)
+        spec_texts.append(spec_output.text)
+        spec_acceptance_rates.append(spec_output.acceptance_rate)
+    
+    # Compute WER for both methods
+    spec_wer = compute_wer_batch(references, spec_texts)
+    base_wer = compute_wer_batch(references, base_texts)
+    
+    # Compute latency statistics (median and 95th percentile)
+    def percentile_95(values):
+        sorted_vals = sorted(values)
+        idx = min(int(0.95 * len(sorted_vals)), len(sorted_vals) - 1)
+        return sorted_vals[idx]
+    
+    spec_result = BenchmarkResult(
+        method="speculative",
+        latency_median_s=median(spec_latencies),
+        latency_p95_s=percentile_95(spec_latencies),
+        wer=spec_wer,
+        acceptance_rate=sum(spec_acceptance_rates) / len(spec_acceptance_rates) if spec_acceptance_rates else 0.0,
+    )
+    
+    base_result = BenchmarkResult(
+        method="baseline",
+        latency_median_s=median(base_latencies),
+        latency_p95_s=percentile_95(base_latencies),
+        wer=base_wer,
+        acceptance_rate=None,  # No speculative decoding in baseline
+    )
+    
+    logger.info("Benchmark complete:")
+    logger.info(spec_result.summary())
+    logger.info(base_result.summary())
+    
+    return spec_result, base_result
