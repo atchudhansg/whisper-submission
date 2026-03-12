@@ -480,17 +480,6 @@ tests/
 
 ---
 
-## Contributing
-
-Improvements welcome:
-- [ ] Beam search implementation
-- [ ] Translation task support
-- [ ] Stacked-batch GPU decoding
-- [ ] Temperature annealing in rejection resampling
-- [ ] Language-specific draft model selection
-
----
-
 ## License
 
 MIT License. See [LICENSE](LICENSE) for details.
