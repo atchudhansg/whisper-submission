@@ -1,0 +1,24 @@
+# Speculative Whisper — Default Configuration
+# Override at runtime or pass a custom YAML path to SpeculativeWhisper(config_path=...)
+
+# Model selection
+draft_model: "tiny"
+final_model: "large-v3"
+
+# Device: "cuda", "cpu", or "auto" (auto selects cuda if available)
+device: "auto"
+
+# Speculative decoding parameters
+draft_k: 5                # Number of tokens Tiny drafts per iteration
+temperature: 0.0          # Sampling temperature (0.0 = greedy/deterministic)
+max_tokens: 200            # Maximum tokens to generate per audio segment
+
+# Batching
+batch_size: 1              # Number of audio files to process together
+
+# Language
+language: "en"
+
+# Optional sampling parameters (null = disabled)
+beam_size: null            # Beam search width (null = no beam search)
+top_p: null                # Nucleus sampling threshold (null = disabled)
