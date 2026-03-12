@@ -490,13 +490,11 @@ configs/
 benchmark.py             # Performance evaluation script
 tests/                   # Comprehensive test suite
 ├── conftest.py          # Pytest fixtures
-├── test_smoke.py        # Model loading & diagnostics
+├── test_audio.py        # Audio preprocessing validation
+├── test_core_api.py     # Configuration & API validation
 ├── test_e2e.py          # End-to-end transcription
-├── test_decoding.py     # Rejection sampling logic
-├── test_audio.py        # Audio preprocessing
-├── test_core_api.py     # API validation & config
 ├── test_evaluation.py   # WER computation
-└── test_integration.py   # Full integration tests
+└── test_integration.py   # Full integration with real models & audio
 ```
 
 ---
@@ -529,17 +527,6 @@ pytest tests/test_core_api.py -v
 pytest tests/test_audio.py -v
 ```
 
-**test_decoding.py** — Rejection sampling algorithm
-- Draft step token generation
-- Accept/reject logic correctness
-- Bonus token generation
-- Determinism in greedy mode
-- Consistency with baseline Large V3
-
-```bash
-pytest tests/test_decoding.py -v
-```
-
 **test_evaluation.py** — WER metric computation
 - Single-utterance WER (identical, 1 error, empty)
 - Batch WER corpus-level evaluation
@@ -552,31 +539,6 @@ pytest tests/test_evaluation.py -v
 
 #### Integration Tests
 
-**test_integration.py** — End-to-end with real models and audio
-- Single file transcription and batch processing
-- `transcribe()` vs `transcribe_verbose()` outputs
-- Greedy determinism validation
-- Speculative vs baseline consistency
-- Acceptance rate in valid range
-- Multilingual configuration
-- Error handling (missing files, invalid parameters)
-
-```bash
-pytest tests/test_integration.py -v -m integration
-```
-
-#### Diagnostic Tests
-
-**test_smoke.py** — Verify model loading and system diagnostics
-- Loads both draft and final models
-- Reports GPU memory, device type, model sizes
-- Measures loading time
-- Validates model parameters and dtype
-
-```bash
-python -m tests.test_smoke --draft tiny --final large-v3 --device cuda
-```
-
 **test_e2e.py** — End-to-end transcription test
 - Transcribes test audio
 - Compares speculative vs baseline latency
@@ -585,6 +547,19 @@ python -m tests.test_smoke --draft tiny --final large-v3 --device cuda
 
 ```bash
 python -m tests.test_e2e --draft tiny --final tiny --device cpu
+```
+
+**test_integration.py** — Full integration with real models and audio
+- Single file transcription and batch processing
+- `transcribe()` vs `transcribe_verbose()` outputs
+- Greedy determinism validation
+- Speculative vs baseline consistency
+- Acceptance rate validation
+- Multilingual configuration
+- Error handling (missing files, invalid parameters)
+
+```bash
+pytest tests/test_integration.py -v -m integration
 ```
 
 ### Performance Evaluation
