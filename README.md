@@ -1,4 +1,4 @@
-# 🚀 Speculative Whisper: Fast, Exact Audio Inference
+# Speculative Whisper: Fast, Exact Audio Inference
 
 **Speculative decoding for OpenAI's Whisper model.** Use a lightweight draft model (Whisper Tiny, 39M params) to predict token sequences, verified in parallel by the production model (Whisper Large V3, 1.5B params). Rejection sampling ensures outputs are **mathematically identical** to Large V3 alone—no accuracy loss, significant speed gains.
 
@@ -25,15 +25,15 @@ The large model's probability distribution is preserved exactly—mathematically
 
 ## Why Use Speculative Whisper?
 
-✅ **Exact Inference** — Provably identical to Whisper Large V3  
-✅ **Production-Ready** — FastAPI, Pydantic config, WER evaluation  
-✅ **Optimized** — CUDA/CPU auto-detection, fp16, Flash Attention  
-✅ **Multilingual** — 99+ languages via Whisper's models  
-✅ **Zero Setup** — Includes 30 CREMA clips—benchmark instantly  
+- **Exact Inference** — Provably identical to Whisper Large V3
+- **Production-Ready** — FastAPI, Pydantic config, WER evaluation
+- **Optimized** — CUDA/CPU auto-detection, fp16, Flash Attention
+- **Multilingual** — 99+ languages via Whisper's models
+- **Zero Setup** — Includes 30 CREMA clips—benchmark instantly
 
 ---
 
-## ⚡ Quick Start
+## Quick Start
 
 ### 1. Installation
 
@@ -75,7 +75,7 @@ curl -X POST http://localhost:8000/transcribe/single -F "file=@audio.wav"
 
 ---
 
-## 📖 Usage Guide
+## Usage Guide
 
 ### Python API
 
@@ -195,7 +195,7 @@ curl -X POST "http://localhost:8000/transcribe?batch_size=3" \
 
 ---
 
-## 🌍 Language Support
+## Language Support
 
 Whisper supports **99+ languages** via ISO 639-1 codes.
 
@@ -214,7 +214,7 @@ See [Whisper Languages](https://github.com/openai/whisper#available-models-and-l
 
 ---
 
-## 🔬 Technical Architecture
+## Technical Architecture
 
 ### The Algorithm
 
@@ -258,7 +258,7 @@ Result: Distribution = Large V3's distribution (proven via rejection sampling)
 
 ---
 
-## 📊 Benchmarks
+## Benchmarks
 
 ### Experimental Setup
 - **Dataset:** [CREMA](https://www.kaggle.com/datasets/dmitrybabko/speech-emotion-recognition-en) (30 clips, 4–6 words, 1–2 seconds)
@@ -296,7 +296,7 @@ print(result_base.summary())
 
 ---
 
-## 📦 Project Structure
+## Project Structure
 
 ```
 speculative_whisper/
@@ -322,7 +322,7 @@ tests/
 
 ---
 
-## ⚠️ Limitations & Trade-offs
+## Limitations & Trade-offs
 
 | Limitation | Impact | Workaround |
 |-----------|--------|-----------|
@@ -334,7 +334,7 @@ tests/
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Improvements welcome:
 - [ ] Beam search implementation
@@ -345,6 +345,6 @@ Improvements welcome:
 
 ---
 
-## 📄 License
+## License
 
 MIT License. See [LICENSE](LICENSE) for details.
