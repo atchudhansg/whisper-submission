@@ -4,141 +4,161 @@
 
 Speculative decoding applied to OpenAI's Whisper speech recognition model. Uses Whisper Tiny (39M params) as a lightweight draft model to propose token sequences, then verifies them with Whisper Large V3 (1.5B params) in a single parallel forward pass. Rejection sampling guarantees the output distribution is **mathematically identical** to running Large V3 alone — this is exact inference, not an approximation.
 
-**Current status:** Functionally correct with ~50% draft acceptance rate. Speedup is marginal (1.02x greedy, 0.95x top-p) on short audio clips due to GPU compute bottlenecks. Best suited for CPU inference or longer audio sequences.
+**Benchmarks (P100 GPU, 30 CREMA clips):** ~50% draft acceptance rate, 1.02× speedup greedy, 0.95× top-p. Included `samples/` directory lets you run everything without downloading any dataset.
 
 ---
 
 ## Quick Start
 
-### Installation
-
 ```bash
-git clone https://github.com/yourname/speculative-whisper.git
-cd speculative-whisper
+git clone https://github.com/atchudhansg/whisper-submission.git
+cd whisper-submission
 pip install -e ".[dev]"
 ```
 
-### Usage
+---
 
-**Python API (single file):**
-```python
-from speculative_whisper import SpeculativeWhisper
+## Testing the REST API
 
-sw = SpeculativeWhisper(draft_model="tiny", final_model="large-v3", device="cuda")
-text = sw.transcribe("audio.wav")
-print(text)
-```
+The repo ships with 30 sample audio files in `samples/` so you can test immediately.
 
-**Python API (batch transcription):**
-```python
-audio_files = ["audio1.wav", "audio2.wav", "audio3.wav"]
-texts = sw.transcribe(audio_files, batch_size=2, draft_k=8)
+### 1. Start the server
 
-for audio, text in zip(audio_files, texts):
-    print(f"{audio}: {text}")
-```
-
-**Runtime config overrides:**
-```python
-# Baseline (no speculative decoding)
-baseline_text = sw.transcribe("audio.wav", use_speculative=False)
-
-# Greedy decoding with more draft tokens
-greedy_text = sw.transcribe("audio.wav", draft_k=10, temperature=0.0)
-
-# Stochastic sampling
-stochastic_text = sw.transcribe(
-    "audio.wav",
-    draft_k=5,
-    sampling_strategy="top_p",
-    temperature=0.6,
-    top_p=0.9,
-)
-```
-
-### CLI
-
+For **local testing** (CPU, starts in seconds):
 ```bash
-speculative-whisper --audio audio1.wav --device cuda
-speculative-whisper --audio-dir ./samples/ --batch-size 4 --output results.json
+WHISPER_DRAFT_MODEL=tiny WHISPER_FINAL_MODEL=tiny uvicorn api.server:app --host 0.0.0.0 --port 8000
 ```
 
-### REST API
-
-Start the FastAPI server (models loaded once on startup):
-
+For **production** (GPU, loads Large V3 — takes ~30s on CUDA):
 ```bash
-# Option 1: Direct uvicorn
-uvicorn api.server:app --host 0.0.0.0 --port 8000
-
-# Option 2: Via Python
-python -m api.server
-
-# Option 3: With environment overrides
 WHISPER_DRAFT_MODEL=tiny WHISPER_FINAL_MODEL=large-v3 WHISPER_DEVICE=cuda \
   uvicorn api.server:app --host 0.0.0.0 --port 8000
 ```
 
-**Endpoints:**
+Wait for: `INFO: Application startup complete.`
+
+### 2. Verify it's running
+
+```bash
+curl http://localhost:8000/health
+```
+```json
+{"status":"ok","model_loaded":true,"draft_model":"tiny","final_model":"tiny","device":"cpu"}
+```
+
+### 3. Transcribe a single file — speculative (greedy)
+
+```bash
+curl -X POST "http://localhost:8000/transcribe/single?draft_k=5&temperature=0.0" \
+  -F "file=@samples/1001_DFA_ANG_XX.wav"
+```
+```json
+{"file":"1001_DFA_ANG_XX.wav","text":"Don't forget to check it.","latency_s":0.67,"acceptance_rate":0.5,"num_tokens":7}
+```
+
+### 4. Transcribe — top-p sampling
+
+```bash
+curl -X POST "http://localhost:8000/transcribe/single?sampling_strategy=top_p&top_p=0.9&temperature=0.6" \
+  -F "file=@samples/1001_DFA_ANG_XX.wav"
+```
+
+### 5. Transcribe — baseline only (no speculative decoding)
+
+```bash
+curl -X POST "http://localhost:8000/transcribe/single?use_speculative=false" \
+  -F "file=@samples/1001_DFA_ANG_XX.wav"
+```
+
+### 6. Batch transcription (multiple files)
+
+```bash
+curl -X POST "http://localhost:8000/transcribe?batch_size=3&draft_k=5" \
+  -F "files=@samples/1001_DFA_ANG_XX.wav" \
+  -F "files=@samples/1002_DFA_ANG_XX.wav" \
+  -F "files=@samples/1003_DFA_ANG_XX.wav"
+```
+```json
+{
+  "results": [
+    {"file": "1001_DFA_ANG_XX.wav", "text": "Don't forget to check it.", "latency_s": 0.67, "acceptance_rate": 0.5, "num_tokens": 7},
+    {"file": "1002_DFA_ANG_XX.wav", "text": "...", "latency_s": 0.65, "acceptance_rate": 0.6, "num_tokens": 6},
+    {"file": "1003_DFA_ANG_XX.wav", "text": "...", "latency_s": 0.68, "acceptance_rate": 0.4, "num_tokens": 8}
+  ],
+  "total_files": 3,
+  "total_latency_s": 2.01
+}
+```
+
+### API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check — returns model status and config |
-| `/transcribe/single` | POST | Transcribe a single audio file |
-| `/transcribe` | POST | Transcribe multiple audio files (batch) |
+| `GET /health` | GET | Model status, device, and model names |
+| `POST /transcribe/single` | POST | Transcribe one audio file |
+| `POST /transcribe` | POST | Batch transcribe multiple files |
 
-**Query parameters** (all endpoints):
-- `max_tokens` (int, default=200): Max tokens per segment
-- `use_speculative` (bool, default=true): Use speculative decoding
-- `draft_k` (int, optional): Override draft_k from config
-- `temperature` (float, optional): Override sampling temperature
-- `top_p` (float, optional): Override nucleus sampling p
-- `sampling_strategy` (str, optional): "greedy" or "top_p"
+**Query parameters** (available on all transcription endpoints):
 
-**Examples:**
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `use_speculative` | bool | `true` | Use speculative decoding (false = baseline Large only) |
+| `draft_k` | int | `5` | Draft tokens per iteration |
+| `temperature` | float | `0.0` | Sampling temperature (0 = greedy) |
+| `top_p` | float | — | Nucleus sampling p (e.g. `0.9`) |
+| `sampling_strategy` | string | `greedy` | `"greedy"` or `"top_p"` |
+| `max_tokens` | int | `200` | Max tokens to generate |
+| `batch_size` | int | `1` | Files per batch (batch endpoint only) |
 
-```bash
-# Health check
-curl http://localhost:8000/health
+### Environment Variables
 
-# Single file with config overrides
-curl -X POST "http://localhost:8000/transcribe/single?draft_k=8&temperature=0.0" \
-  -F "file=@audio.wav"
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `WHISPER_DRAFT_MODEL` | `tiny` | Draft model name |
+| `WHISPER_FINAL_MODEL` | `large-v3` | Final model name |
+| `WHISPER_DEVICE` | `auto` | `cuda`, `cpu`, or `auto` |
 
-# Batch transcription
-curl -X POST "http://localhost:8000/transcribe?batch_size=4&draft_k=5" \
-  -F "files=@audio1.wav" \
-  -F "files=@audio2.wav" \
-  -F "files=@audio3.wav"
+---
 
-# Without speculative decoding (baseline Large)
-curl -X POST "http://localhost:8000/transcribe/single?use_speculative=false" \
-  -F "file=@audio.wav"
-```
-
-**Python client example** (see [examples/api_client_example.py](examples/api_client_example.py)):
+## Python API
 
 ```python
-import requests
+from speculative_whisper import SpeculativeWhisper
+
+sw = SpeculativeWhisper(draft_model="tiny", final_model="large-v3", device="cuda")
 
 # Single file
-with open("audio.wav", "rb") as f:
-    response = requests.post(
-        "http://localhost:8000/transcribe/single",
-        files={"file": f},
-        params={"draft_k": 5, "temperature": 0.0},
-    )
-result = response.json()
-print(f"Text: {result['text']}, Latency: {result['latency_s']:.3f}s")
+text = sw.transcribe("samples/1001_DFA_ANG_XX.wav")
 
 # Batch
-files = [("files", open(f"audio{i}.wav", "rb")) for i in range(3)]
-response = requests.post(
-    "http://localhost:8000/transcribe",
-    files=files,
-    params={"batch_size": 2, "draft_k": 5},
-)
-results = response.json()
+texts = sw.transcribe(["samples/1001_DFA_ANG_XX.wav", "samples/1002_DFA_ANG_XX.wav"], batch_size=2)
+
+# Runtime overrides — tune draft_k, temperature, top_p per call
+text = sw.transcribe("audio.wav", draft_k=10, temperature=0.0)
+text = sw.transcribe("audio.wav", sampling_strategy="top_p", top_p=0.9, temperature=0.6)
+
+# Baseline (no speculative decoding)
+text = sw.transcribe("audio.wav", use_speculative=False)
+```
+
+---
+
+## Running the Benchmark
+
+```bash
+pip install jiwer
+python benchmark.py samples/
+```
+
+Runs 3 passes (baseline, speculative greedy, speculative top-p) on all 30 sample files and prints per-sample latency, speedup, acceptance rate, WER, and aggregate stats.
+
+---
+
+### CLI
+
+```bash
+speculative-whisper --audio samples/1001_DFA_ANG_XX.wav --device cuda
+speculative-whisper --audio-dir samples/ --batch-size 4 --output results.json
 ```
 
 ---
@@ -377,37 +397,6 @@ During development, an initial implementation achieved **0% draft acceptance rat
    - **After:** 47-50% acceptance, 1.02× speedup (greedy), texts match baseline
 
 **Key lesson:** When managing KV cache with position offsets, extreme care is needed to ensure logit positions align with token positions. For production correctness, we chose simplicity (fresh state per call) over complex cross-iteration cache management.
-
----
-
-## Running the Benchmark Script
-
-The repository includes 30 sample audio files from the [CREMA dataset](https://www.kaggle.com/datasets/dmitrybabko/speech-emotion-recognition-en) in the `samples/` directory (one file per speaker, IDs 1001-1030).
-
-To reproduce the benchmarks:
-
-```bash
-# Install dependencies
-pip install jiwer
-
-# Clone and install
-git clone https://github.com/atchudhansg/whisper-submission.git
-cd whisper-submission
-pip install -e .
-
-# Run benchmark on included samples
-python benchmark.py samples/
-
-# Or specify a custom audio directory
-python benchmark.py /path/to/your/audio/files/
-```
-
-**Output:**
-- Per-sample table (filename, latency, speedup, acceptance rate, WER)
-- Transcription comparison (first 15 files)
-- Aggregate statistics (mean/median latency, speedup range, acceptance rate, WER, exact match rate)
-
-**Sample files source:** The 30 audio files in `samples/` are from the [Speech Emotion Recognition EN](https://www.kaggle.com/datasets/dmitrybabko/speech-emotion-recognition-en) dataset (CREMA subset), used under the dataset's license.
 
 ---
 
