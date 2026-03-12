@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 import torch
 import yaml
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -23,6 +23,12 @@ class DecodingConfig(BaseSettings):
 
     # Device
     device: str = Field("auto", description="'cuda', 'cpu', or 'auto'.")
+
+    # Sampling strategy toggle — switch between runs for benchmarking.
+    sampling_strategy: Literal["greedy", "top_p"] = Field(
+        "greedy",
+        description="'greedy' for deterministic argmax, 'top_p' for nucleus sampling.",
+    )
 
     # Speculative decoding parameters
     draft_k: int = Field(5, ge=1, le=50, description="Tokens to draft per iteration.")
@@ -52,6 +58,19 @@ class DecodingConfig(BaseSettings):
         if v not in allowed:
             raise ValueError(f"device must be one of {allowed}, got {v!r}")
         return v
+
+    @model_validator(mode="after")
+    def _resolve_sampling_defaults(self) -> "DecodingConfig":
+        """Ensure temperature and top_p are consistent with the chosen strategy."""
+        if self.sampling_strategy == "greedy":
+            self.temperature = 0.0
+            self.top_p = None
+        elif self.sampling_strategy == "top_p":
+            if self.top_p is None:
+                self.top_p = 0.9
+            if self.temperature == 0.0:
+                self.temperature = 0.6
+        return self
 
     # ------------------------------------------------------------------
     # Properties

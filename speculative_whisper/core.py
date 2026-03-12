@@ -33,6 +33,7 @@ class SpeculativeWhisper:
         final_model: str = "large-v3",
         device: str = "auto",
         config_path: Optional[Union[str, Path]] = None,
+        **kwargs,
     ) -> None:
         """Initialise models and configuration.
 
@@ -46,6 +47,8 @@ class SpeculativeWhisper:
             config_path: Optional path to a YAML config file.  Fields supplied
                 here (``draft_model``, ``final_model``, ``device``) override the
                 YAML values.
+            **kwargs: Any additional :class:`DecodingConfig` fields (e.g.
+                ``sampling_strategy``, ``top_p``, ``temperature``).
         """
         # Build config — YAML first (if provided), then override with explicit args.
         if config_path is not None:
@@ -54,13 +57,12 @@ class SpeculativeWhisper:
             self.config = DecodingConfig()
 
         # Explicit constructor args take precedence over YAML values.
-        self.config = self.config.model_copy(
-            update={
-                "draft_model": draft_model,
-                "final_model": final_model,
-                "device": device,
-            }
-        )
+        overrides = {"draft_model": draft_model, "final_model": final_model, "device": device}
+        overrides.update(kwargs)
+        # Re-construct to ensure model validators (e.g. sampling_strategy defaults) fire.
+        merged = self.config.model_dump()
+        merged.update(overrides)
+        self.config = DecodingConfig(**merged)
 
         # Load both models onto the resolved device.
         self.model_pair: ModelPair = load_models(self.config)
@@ -96,7 +98,45 @@ class SpeculativeWhisper:
             A single transcription string (if one file given) or a list of
             transcription strings (if multiple files given).
         """
-        raise NotImplementedError("TODO: implement transcribe")
+        from speculative_whisper.audio import compute_mel, load_audio
+        from speculative_whisper.decoding import baseline_decode, speculative_decode
+
+        # Normalise input to a list.
+        single_input = isinstance(audio, (str, Path))
+        paths = [audio] if single_input else list(audio)
+
+        # Override max_tokens in a per-call config copy.
+        call_config = self.config.model_copy(update={"max_tokens": max_tokens})
+
+        results: List[str] = []
+
+        # Process in batches (decoding is per-sample, batching is for throughput).
+        for batch_start in range(0, len(paths), batch_size):
+            batch_paths = paths[batch_start : batch_start + batch_size]
+
+            for p in batch_paths:
+                audio_data = load_audio(p)
+                mel = compute_mel(
+                    audio_data,
+                    device=self.model_pair.device,
+                    dtype=self.model_pair.dtype,
+                    n_mels=self.model_pair.final.dims.n_mels,
+                ).unsqueeze(0)  # (1, n_mels, T)
+
+                if use_speculative:
+                    output = speculative_decode(self.model_pair, mel, call_config)
+                else:
+                    output = baseline_decode(self.model_pair, mel, call_config)
+
+                logger.info(
+                    "%s → %d tokens, acceptance=%.2f",
+                    Path(p).name,
+                    len(output.tokens),
+                    output.acceptance_rate,
+                )
+                results.append(output.text)
+
+        return results[0] if single_input else results
 
     # ------------------------------------------------------------------
     # Benchmarking

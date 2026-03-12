@@ -8,9 +8,13 @@ final_model: "large-v3"
 # Device: "cuda", "cpu", or "auto" (auto selects cuda if available)
 device: "auto"
 
+# Sampling strategy: "greedy" or "top_p"
+# Switch between these to benchmark deterministic vs stochastic decoding.
+sampling_strategy: "greedy"
+
 # Speculative decoding parameters
 draft_k: 5                # Number of tokens Tiny drafts per iteration
-temperature: 0.0          # Sampling temperature (0.0 = greedy/deterministic)
+temperature: 0.0          # Sampling temperature — auto-set by sampling_strategy
 max_tokens: 200            # Maximum tokens to generate per audio segment
 
 # Batching
@@ -19,6 +23,6 @@ batch_size: 1              # Number of audio files to process together
 # Language
 language: "en"
 
-# Optional sampling parameters (null = disabled)
+# Optional sampling parameters (auto-set by sampling_strategy)
 beam_size: null            # Beam search width (null = no beam search)
-top_p: null                # Nucleus sampling threshold (null = disabled)
+top_p: null                # Nucleus sampling threshold (auto: 0.9 when strategy=top_p)
