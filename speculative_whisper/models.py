@@ -53,6 +53,13 @@ def _load_single_model(
     # Cast to fp16 when running on CUDA for memory / speed.
     if fp16 and device != "cpu":
         model = model.half()
+        # Whisper's LayerNorm wrapper casts its input to float32 before calling
+        # PyTorch's layer_norm.  Newer PyTorch (≥2.1) strictly requires that the
+        # input dtype matches the weight/bias dtype, so we restore all LayerNorm
+        # parameters to float32 after the half-precision cast.
+        for module in model.modules():
+            if isinstance(module, torch.nn.LayerNorm):
+                module.float()
 
     model.eval()
     return model
