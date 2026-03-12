@@ -350,6 +350,7 @@ def speculative_decode(
     model_pair: ModelPair,
     mel: Tensor,
     config: DecodingConfig,
+    mel_draft: Optional[Tensor] = None,
 ) -> DecodingOutput:
     """Run the full speculative decoding loop on a single audio segment.
 
@@ -363,8 +364,13 @@ def speculative_decode(
 
     Args:
         model_pair: Loaded draft + final models.
-        mel: Log-mel spectrogram, shape ``(1, n_mels, T)``.
+        mel: Log-mel spectrogram for the final model, shape ``(1, n_mels_final, T)``.
         config: Decoding configuration.
+        mel_draft: Log-mel spectrogram for the draft model, shape
+            ``(1, n_mels_draft, T)``.  Required when draft and final models
+            have different ``n_mels`` (e.g. Tiny=80 vs Large=128).  When
+            ``None``, ``mel`` is reused (valid only when both models share
+            the same ``n_mels``).
 
     Returns:
         A ``DecodingOutput`` with text, tokens, and acceptance statistics.
@@ -377,14 +383,28 @@ def speculative_decode(
     # Each model's decoder cross-attends to its *own* encoder output, since
     # the draft (Tiny, d_model=384) and final (Large, d_model=1280) have
     # different embedding dimensions and cannot share encoder outputs.
+    # Additionally, Tiny uses n_mels=80 while Large uses n_mels=128, so
+    # mel spectrograms must also be computed separately per model.
     mel = mel.to(device=device, dtype=model_pair.dtype)
     encoder_output_final = model_pair.final.encoder(mel)   # (1, 1500, d_final)
-    # Reuse the final encoder output when both models are the same architecture
-    # (e.g. tiny+tiny in tests), otherwise encode separately.
-    if model_pair.draft.dims.n_audio_state == model_pair.final.dims.n_audio_state:
+
+    # Use dedicated draft mel if provided; fall back to shared mel only when
+    # both models have the same number of mel bins.
+    if mel_draft is not None:
+        mel_for_draft = mel_draft.to(device=device, dtype=model_pair.dtype)
+    elif model_pair.draft.dims.n_mels == model_pair.final.dims.n_mels:
+        mel_for_draft = mel
+    else:
+        raise ValueError(
+            f"Draft model expects n_mels={model_pair.draft.dims.n_mels} but "
+            f"final model mel has n_mels={model_pair.final.dims.n_mels}. "
+            "Pass mel_draft= with the correct spectrogram for the draft model."
+        )
+
+    if model_pair.draft.dims.n_audio_state == model_pair.final.dims.n_audio_state and mel_draft is None:
         encoder_output_draft = encoder_output_final
     else:
-        encoder_output_draft = model_pair.draft.encoder(mel)  # (1, 1500, d_draft)
+        encoder_output_draft = model_pair.draft.encoder(mel_for_draft)  # (1, 1500, d_draft)
 
     # 2. Build initial token prefix and logit filters.
     prefix = _get_initial_tokens(model_pair, config)

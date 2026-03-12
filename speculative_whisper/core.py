@@ -116,15 +116,31 @@ class SpeculativeWhisper:
 
             for p in batch_paths:
                 audio_data = load_audio(p)
+                # Compute mel spectrograms for each model separately.
+                # Large uses n_mels=128, Tiny uses n_mels=80 — they differ.
                 mel = compute_mel(
                     audio_data,
                     device=self.model_pair.device,
                     dtype=self.model_pair.dtype,
                     n_mels=self.model_pair.final.dims.n_mels,
-                ).unsqueeze(0)  # (1, n_mels, T)
+                ).unsqueeze(0)  # (1, n_mels_final, T)
+
+                # Pre-compute draft mel only when n_mels differ to avoid
+                # the redundant forward pass on same-architecture pairs.
+                draft_n_mels = self.model_pair.draft.dims.n_mels
+                final_n_mels = self.model_pair.final.dims.n_mels
+                if draft_n_mels != final_n_mels:
+                    mel_draft = compute_mel(
+                        audio_data,
+                        device=self.model_pair.device,
+                        dtype=self.model_pair.dtype,
+                        n_mels=draft_n_mels,
+                    ).unsqueeze(0)  # (1, n_mels_draft, T)
+                else:
+                    mel_draft = None
 
                 if use_speculative:
-                    output = speculative_decode(self.model_pair, mel, call_config)
+                    output = speculative_decode(self.model_pair, mel, call_config, mel_draft=mel_draft)
                 else:
                     output = baseline_decode(self.model_pair, mel, call_config)
 
