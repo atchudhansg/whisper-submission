@@ -2,22 +2,23 @@
 """
 Benchmark: Baseline Whisper Large vs Speculative Decoding (Greedy & Top-p)
 ===========================================================================
-Dataset : Speech Emotion Recognition EN
-          kaggle: dmitrybabko/speech-emotion-recognition-en
+Dataset : Speech Emotion Recognition EN (Crema subset)
+          Source: https://www.kaggle.com/datasets/dmitrybabko/speech-emotion-recognition-en
 Models  : draft = whisper-tiny,  final = whisper-large
 Metrics : Latency (s), Speedup (x), Acceptance Rate (%), WER vs baseline
-Subset  : Top 30 audio files (sorted by path)
 
-Run on Kaggle:
-    pip install kagglehub jiwer openai-whisper
-    python benchmark.py
+Usage:
+    python benchmark.py [audio_dir]
+    python benchmark.py samples/       # Use local samples
 """
 
 from __future__ import annotations
 
+import argparse
 import glob
 import logging
 import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,12 +26,6 @@ from statistics import mean, median, stdev
 from typing import List, Optional
 
 import torch
-
-# ── Kaggle dataset ────────────────────────────────────────────────────────────
-try:
-    import kagglehub
-except ImportError:
-    raise SystemExit("Run:  pip install kagglehub")
 
 # ── WER ───────────────────────────────────────────────────────────────────────
 try:
@@ -360,15 +355,33 @@ def print_aggregate_stats(baseline: ModeResults, greedy: ModeResults, topp: Mode
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    # ── 1. Download dataset ───────────────────────────────────────────────────
-    print("Downloading dataset …")
-    dataset_path = kagglehub.dataset_download("dmitrybabko/speech-emotion-recognition-en")
-    print(f"Dataset path: {dataset_path}\n")
+    # ── Parse CLI args ────────────────────────────────────────────────────────
+    parser = argparse.ArgumentParser(
+        description="Benchmark speculative decoding vs baseline on audio files."
+    )
+    parser.add_argument(
+        "audio_dir",
+        nargs="?",
+        default="samples",
+        help="Directory containing .wav files (default: samples/)",
+    )
+    args = parser.parse_args()
 
-    audio_files = _collect_audio_files(dataset_path)
-    print(f"Using top {len(audio_files)} audio files.\n")
-    for i, f in enumerate(audio_files, 1):
-        print(f"  {i:02d}. {f.relative_to(Path(dataset_path))}")
+    audio_dir = Path(args.audio_dir)
+    if not audio_dir.exists():
+        print(f"ERROR: Audio directory not found: {audio_dir}")
+        print(f"\nUsage: python benchmark.py [audio_dir]")
+        print(f"       python benchmark.py samples/")
+        sys.exit(1)
+
+    # ── 1. Collect audio files ────────────────────────────────────────────────
+    print(f"Loading audio files from: {audio_dir}")
+    audio_files = _collect_audio_files(str(audio_dir))
+    print(f"Found {len(audio_files)} audio files.\n")
+    for i, f in enumerate(audio_files[:10], 1):  # show first 10
+        print(f"  {i:02d}. {f.name}")
+    if len(audio_files) > 10:
+        print(f"  ... and {len(audio_files) - 10} more")
     print()
 
     # ── 2. Load models ────────────────────────────────────────────────────────

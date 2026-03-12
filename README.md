@@ -197,8 +197,8 @@ text = sw.transcribe(
 
 ## Benchmarks
 
-**Dataset:** Speech Emotion Recognition EN (Kaggle: `dmitrybabko/speech-emotion-recognition-en`)  
-**Files:** 30 short emotion clips from CREMA dataset (4-6 words each)  
+**Dataset:** [Speech Emotion Recognition EN](https://www.kaggle.com/datasets/dmitrybabko/speech-emotion-recognition-en) (CREMA subset)  
+**Files:** 30 short emotion clips (4-6 words each, included in `samples/` directory)  
 **Hardware:** Tesla P100-PCIE-16GB (Kaggle)  
 **Models:** draft=tiny (37.2M params), final=large (1541.6M params)
 
@@ -382,25 +382,32 @@ During development, an initial implementation achieved **0% draft acceptance rat
 
 ## Running the Benchmark Script
 
+The repository includes 30 sample audio files from the [CREMA dataset](https://www.kaggle.com/datasets/dmitrybabko/speech-emotion-recognition-en) in the `samples/` directory (one file per speaker, IDs 1001-1030).
+
 To reproduce the benchmarks:
 
 ```bash
 # Install dependencies
-pip install kagglehub jiwer
+pip install jiwer
 
 # Clone and install
 git clone https://github.com/atchudhansg/whisper-submission.git
 cd whisper-submission
 pip install -e .
 
-# Run benchmark (downloads dataset automatically)
-python benchmark.py
+# Run benchmark on included samples
+python benchmark.py samples/
+
+# Or specify a custom audio directory
+python benchmark.py /path/to/your/audio/files/
 ```
 
 **Output:**
 - Per-sample table (filename, latency, speedup, acceptance rate, WER)
 - Transcription comparison (first 15 files)
 - Aggregate statistics (mean/median latency, speedup range, acceptance rate, WER, exact match rate)
+
+**Sample files source:** The 30 audio files in `samples/` are from the [Speech Emotion Recognition EN](https://www.kaggle.com/datasets/dmitrybabko/speech-emotion-recognition-en) dataset (CREMA subset), used under the dataset's license.
 
 ---
 
