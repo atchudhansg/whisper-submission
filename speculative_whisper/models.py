@@ -89,6 +89,15 @@ def load_models(config: DecodingConfig) -> ModelPair:
     for param in draft_model.parameters():
         param.requires_grad_(False)
 
+    # CUDA-specific optimisations.
+    if device != "cpu":
+        torch.backends.cudnn.benchmark = True
+        # SDPA (scaled-dot-product attention) is enabled by default in
+        # newer PyTorch; ensure Whisper uses it.
+        if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+            torch.backends.cuda.enable_flash_sdp(True)
+            torch.backends.cuda.enable_mem_efficient_sdp(True)
+
     # Build a shared tokenizer from the final (authoritative) model.
     tokenizer = get_tokenizer(
         multilingual=final_model.is_multilingual,

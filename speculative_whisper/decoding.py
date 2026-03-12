@@ -172,46 +172,84 @@ def draft_step(
     sample_begin: int,
     tokenizer,
     top_p: Optional[float] = None,
+    kv_cache: Optional[dict] = None,
+    prefix_cached_len: int = 0,
 ) -> DraftResult:
-    """Autoregressively sample *k* tokens from the draft model.
+    """Autoregressively sample *k* tokens from the draft model **with KV caching**.
 
-    Runs *k* sequential forward passes through Whisper Tiny's decoder,
-    each time extending the prefix by one sampled token and recording
-    the log-probability.
+    On the first call (``kv_cache`` empty / None, ``prefix_cached_len=0``),
+    the full prefix is fed in to warm the cache.  Subsequent iterations
+    reuse the cached keys/values and only feed the new token(s), giving
+    a large speed-up on long sequences.
 
     Args:
         draft_model: The draft (Tiny) Whisper model.
         encoder_output: Encoder features, shape ``(1, T', d_model)``.
-        prefix: Current token prefix (list of token IDs).
+        prefix: Current token prefix **including** previously generated tokens.
         k: Number of tokens to draft.
         temperature: Sampling temperature. 0 → argmax (greedy).
         eot_token: End-of-transcript token ID — stop drafting if sampled.
+        suppress_ids: Token IDs to suppress in logits.
+        sample_begin: Position index of the first free decoding step.
+        tokenizer: Whisper tokenizer (for SuppressBlank).
+        top_p: Optional nucleus-sampling threshold.
+        kv_cache: Persistent KV cache dict from ``install_kv_cache_hooks``.
+            Mutated in-place — callers should keep the reference across
+            iterations and truncate as needed on rejection.
+        prefix_cached_len: Number of prefix tokens already present in
+            ``kv_cache``.  We only feed the *new* portion of the prefix
+            to the decoder.
 
     Returns:
         A ``DraftResult`` containing the drafted tokens and their log-probs.
     """
     device = encoder_output.device
-    tokens = list(prefix)
     drafted_tokens: List[int] = []
     drafted_log_probs: List[float] = []
 
-    for _ in range(k):
-        token_tensor = torch.tensor([tokens], dtype=torch.long, device=device)
-        logits = draft_model.decoder(token_tensor, encoder_output)  # (1, seq, vocab)
-        next_logits = logits[0, -1]  # (vocab,)
+    # Determine which tokens to feed: skip those already cached.
+    if kv_cache is not None and prefix_cached_len > 0:
+        tokens_to_feed = prefix[prefix_cached_len:]
+    else:
+        tokens_to_feed = prefix
+
+    # If we have new prefix tokens (e.g. accepted from prior iteration), prime the cache.
+    if tokens_to_feed:
+        token_tensor = torch.tensor([tokens_to_feed], dtype=torch.long, device=device)
+        logits = draft_model.decoder(token_tensor, encoder_output, kv_cache=kv_cache)
+        next_logits = logits[0, -1]
+    else:
+        # Edge case: nothing new to feed — cache is fully warm.
+        # We'll get logits from the first draft token below.
+        next_logits = None
+
+    current_len = len(prefix)
+
+    for i in range(k):
+        if next_logits is None:
+            # Shouldn't happen after warm-up above, but guard anyway.
+            token_tensor = torch.tensor([prefix], dtype=torch.long, device=device)
+            logits = draft_model.decoder(token_tensor, encoder_output, kv_cache=kv_cache)
+            next_logits = logits[0, -1]
 
         # Apply Whisper's logit filters before sampling.
-        _apply_logit_filters(next_logits, len(tokens), sample_begin, suppress_ids, tokenizer, top_p=top_p)
+        _apply_logit_filters(next_logits, current_len, sample_begin, suppress_ids, tokenizer, top_p=top_p)
 
         token_id = _sample_token(next_logits, temperature)
         log_prob = _get_log_prob(next_logits, token_id, temperature)
 
         drafted_tokens.append(token_id)
         drafted_log_probs.append(log_prob)
-        tokens.append(token_id)
+        current_len += 1
 
         if token_id == eot_token:
             break
+
+        # Feed only the new token for the next step (KV cache handles history).
+        if i < k - 1:
+            token_tensor = torch.tensor([[token_id]], dtype=torch.long, device=device)
+            logits = draft_model.decoder(token_tensor, encoder_output, kv_cache=kv_cache)
+            next_logits = logits[0, -1]
 
     return DraftResult(tokens=drafted_tokens, log_probs=drafted_log_probs)
 
@@ -227,38 +265,48 @@ def score_with_final(
     encoder_output: Tensor,
     prefix: List[int],
     draft_tokens: List[int],
+    kv_cache: Optional[dict] = None,
+    prefix_cached_len: int = 0,
 ) -> Tensor:
     """Score all draft positions in one forward pass of the final model.
 
-    Feeds ``prefix + draft_tokens`` into Whisper Large V3's decoder and
-    extracts the logits at each of the *K* draft positions.
+    When a ``kv_cache`` is provided, only the *uncached* portion of the
+    prefix plus the draft tokens are fed through the decoder, drastically
+    reducing computation on subsequent iterations.
 
     Args:
         final_model: The verification (Large V3) Whisper model.
         encoder_output: Encoder features, shape ``(1, T', d_model)``.
         prefix: Token prefix before the draft sequence.
         draft_tokens: Drafted token IDs to verify.
+        kv_cache: Persistent KV cache dict (mutated in-place).
+        prefix_cached_len: How many prefix tokens are already in the cache.
 
     Returns:
         Logits tensor of shape ``(K, vocab_size)`` — one row per draft position.
-        Position i contains the logits *predicting* draft_tokens[i]
-        (i.e. conditioned on prefix + draft_tokens[:i]).
+        Position *i* contains the logits *predicting* ``draft_tokens[i]``
+        (i.e. conditioned on ``prefix + draft_tokens[:i]``).
     """
     device = encoder_output.device
     k = len(draft_tokens)
 
-    # Build the full sequence: prefix + all draft tokens.
-    full_seq = prefix + draft_tokens
-    token_tensor = torch.tensor([full_seq], dtype=torch.long, device=device)
+    # Build only the tokens that are NOT yet in the KV cache.
+    new_prefix_tokens = prefix[prefix_cached_len:]
+    tokens_to_feed = new_prefix_tokens + draft_tokens
+    token_tensor = torch.tensor([tokens_to_feed], dtype=torch.long, device=device)
 
-    # Single forward pass — get logits at every position.
-    logits = final_model.decoder(token_tensor, encoder_output)  # (1, seq_len, vocab)
+    # Single forward pass — logits for every *new* position.
+    logits = final_model.decoder(
+        token_tensor, encoder_output, kv_cache=kv_cache
+    )  # (1, len(tokens_to_feed), vocab)
 
-    # Extract logits at the K positions that *predict* the draft tokens.
-    # Position (len(prefix)-1) predicts draft_tokens[0],
-    # Position (len(prefix))   predicts draft_tokens[1], etc.
-    prefix_len = len(prefix)
-    draft_logits = logits[0, prefix_len - 1 : prefix_len - 1 + k]  # (K, vocab)
+    # The last K positions in the output correspond to the draft tokens.
+    # new_prefix has len(new_prefix_tokens) entries.  Position
+    # (len(new_prefix_tokens) - 1) predicts draft_tokens[0], etc.
+    offset = len(new_prefix_tokens) - 1
+    if offset < 0:
+        offset = 0
+    draft_logits = logits[0, offset : offset + k]  # (K, vocab)
 
     return draft_logits
 
@@ -340,6 +388,18 @@ def accept_reject(
     return accepted, True
 
 
+def _truncate_kv_cache(kv_cache: dict, max_len: int) -> None:
+    """Truncate all cached tensors to ``max_len`` along the sequence dimension.
+
+    This is needed after rejection — tokens beyond the accepted prefix are
+    invalid and must be trimmed so subsequent forward passes see a
+    consistent history.
+    """
+    for module, tensor in kv_cache.items():
+        if tensor.shape[1] > max_len:
+            kv_cache[module] = tensor[:, :max_len].detach()
+
+
 # =====================================================================
 # Main speculative decode loop
 # =====================================================================
@@ -354,23 +414,29 @@ def speculative_decode(
 ) -> DecodingOutput:
     """Run the full speculative decoding loop on a single audio segment.
 
+    Uses **persistent KV caches** for both the draft and final models so
+    that previously-computed attention states are reused across
+    iterations, avoiding redundant computation.
+
     Orchestrates:
-      1. Encode audio once with the final model's encoder.
-      2. Repeat until EOT or ``max_tokens``:
-         a. ``draft_step`` — sample *draft_k* tokens from Tiny.
-         b. ``score_with_final`` — verify in one Large V3 forward pass.
-         c. ``accept_reject`` — keep valid tokens, resample on rejection.
-      3. Decode token IDs to text via the Whisper tokenizer.
+      1. Encode audio once per model.
+      2. Install KV-cache hooks on both models.
+      3. Repeat until EOT or ``max_tokens``:
+         a. ``draft_step`` — sample *draft_k* tokens from Tiny (cached).
+         b. ``score_with_final`` — verify with Large V3 (cached).
+         c. ``accept_reject`` — keep valid tokens; on rejection, truncate
+            both KV caches to the accepted length.
+         d. Bonus token — when all K drafts are accepted, the final model's
+            logits at position K+1 are already available; sample a free
+            extra token.
+      4. Remove hooks and decode token IDs to text.
 
     Args:
         model_pair: Loaded draft + final models.
         mel: Log-mel spectrogram for the final model, shape ``(1, n_mels_final, T)``.
         config: Decoding configuration.
-        mel_draft: Log-mel spectrogram for the draft model, shape
-            ``(1, n_mels_draft, T)``.  Required when draft and final models
-            have different ``n_mels`` (e.g. Tiny=80 vs Large=128).  When
-            ``None``, ``mel`` is reused (valid only when both models share
-            the same ``n_mels``).
+        mel_draft: Log-mel spectrogram for the draft model when ``n_mels``
+            differs (e.g. Tiny=80 vs Large=128).
 
     Returns:
         A ``DecodingOutput`` with text, tokens, and acceptance statistics.
@@ -380,16 +446,9 @@ def speculative_decode(
     device = model_pair.device
 
     # 1. Encode audio once per model.
-    # Each model's decoder cross-attends to its *own* encoder output, since
-    # the draft (Tiny, d_model=384) and final (Large, d_model=1280) have
-    # different embedding dimensions and cannot share encoder outputs.
-    # Additionally, Tiny uses n_mels=80 while Large uses n_mels=128, so
-    # mel spectrograms must also be computed separately per model.
     mel = mel.to(device=device, dtype=model_pair.dtype)
-    encoder_output_final = model_pair.final.encoder(mel)   # (1, 1500, d_final)
+    encoder_output_final = model_pair.final.encoder(mel)
 
-    # Use dedicated draft mel if provided; fall back to shared mel only when
-    # both models have the same number of mel bins.
     if mel_draft is not None:
         mel_for_draft = mel_draft.to(device=device, dtype=model_pair.dtype)
     elif model_pair.draft.dims.n_mels == model_pair.final.dims.n_mels:
@@ -404,105 +463,179 @@ def speculative_decode(
     if model_pair.draft.dims.n_audio_state == model_pair.final.dims.n_audio_state and mel_draft is None:
         encoder_output_draft = encoder_output_final
     else:
-        encoder_output_draft = model_pair.draft.encoder(mel_for_draft)  # (1, 1500, d_draft)
+        encoder_output_draft = model_pair.draft.encoder(mel_for_draft)
 
     # 2. Build initial token prefix and logit filters.
     prefix = _get_initial_tokens(model_pair, config)
     sample_begin = len(prefix)
     suppress_ids = _build_suppress_tokens(tokenizer)
 
+    # 3. Install KV-cache hooks for both models.
+    draft_kv_cache, draft_hooks = model_pair.draft.install_kv_cache_hooks()
+    final_kv_cache, final_hooks = model_pair.final.install_kv_cache_hooks()
+
     total_drafted = 0
     total_accepted = 0
     generated_tokens: List[int] = []
 
-    # 3. Speculative decode loop.
-    while len(generated_tokens) < config.max_tokens:
-        current_prefix = prefix + generated_tokens
+    # Track how many tokens each cache has already processed so we only
+    # feed new tokens on subsequent iterations.
+    draft_cached_len = 0
+    final_cached_len = 0
 
-        # Ensure we don't exceed the decoder's context window (448 tokens).
-        max_ctx = model_pair.final.dims.n_text_ctx
-        if len(current_prefix) >= max_ctx:
-            logger.warning("Reached max decoder context length (%d), stopping.", max_ctx)
-            break
+    try:
+        # 4. Speculative decode loop.
+        while len(generated_tokens) < config.max_tokens:
+            current_prefix = prefix + generated_tokens
 
-        # Cap draft length so we don't exceed max_tokens or context window.
-        remaining = config.max_tokens - len(generated_tokens)
-        ctx_remaining = max_ctx - len(current_prefix)
-        k = min(config.draft_k, remaining, ctx_remaining)
-        if k <= 0:
-            break
+            max_ctx = model_pair.final.dims.n_text_ctx
+            if len(current_prefix) >= max_ctx:
+                logger.warning("Reached max decoder context (%d), stopping.", max_ctx)
+                break
 
-        # Step 1: Draft — sample k tokens from the draft model.
-        draft = draft_step(
-            draft_model=model_pair.draft,
-            encoder_output=encoder_output_draft,
-            prefix=current_prefix,
-            k=k,
-            temperature=config.temperature,
-            eot_token=eot,
-            suppress_ids=suppress_ids,
-            sample_begin=sample_begin,
-            tokenizer=tokenizer,
-            top_p=config.top_p,
-        )
-        total_drafted += len(draft.tokens)
+            remaining = config.max_tokens - len(generated_tokens)
+            ctx_remaining = max_ctx - len(current_prefix)
+            k = min(config.draft_k, remaining, ctx_remaining)
+            if k <= 0:
+                break
 
-        # Step 2: Verify — score all draft tokens with the final model.
-        final_logits = score_with_final(
-            final_model=model_pair.final,
-            encoder_output=encoder_output_final,
-            prefix=current_prefix,
-            draft_tokens=draft.tokens,
-        )
-
-        # Apply the same logit filters to final_logits so that the
-        # acceptance criterion uses the same filtered distribution.
-        for i in range(len(draft.tokens)):
-            _apply_logit_filters(
-                final_logits[i],
-                len(current_prefix) + i,
-                sample_begin,
-                suppress_ids,
-                tokenizer,
+            # --- Draft (with KV cache) ---
+            draft = draft_step(
+                draft_model=model_pair.draft,
+                encoder_output=encoder_output_draft,
+                prefix=current_prefix,
+                k=k,
+                temperature=config.temperature,
+                eot_token=eot,
+                suppress_ids=suppress_ids,
+                sample_begin=sample_begin,
+                tokenizer=tokenizer,
                 top_p=config.top_p,
+                kv_cache=draft_kv_cache,
+                prefix_cached_len=draft_cached_len,
+            )
+            total_drafted += len(draft.tokens)
+
+            # --- Verify (with KV cache) ---
+            final_logits = score_with_final(
+                final_model=model_pair.final,
+                encoder_output=encoder_output_final,
+                prefix=current_prefix,
+                draft_tokens=draft.tokens,
+                kv_cache=final_kv_cache,
+                prefix_cached_len=final_cached_len,
             )
 
-        # Step 3: Accept/reject via rejection sampling.
-        accepted_tokens, all_accepted = accept_reject(
-            draft_result=draft,
-            final_logits=final_logits,
-            temperature=config.temperature,
-        )
-        total_accepted += sum(
-            1 for i, t in enumerate(accepted_tokens)
-            if i < len(draft.tokens) and t == draft.tokens[i]
-        )
+            # Apply logit filters to the final model's output.
+            for i in range(len(draft.tokens)):
+                _apply_logit_filters(
+                    final_logits[i],
+                    len(current_prefix) + i,
+                    sample_begin,
+                    suppress_ids,
+                    tokenizer,
+                    top_p=config.top_p,
+                )
 
-        generated_tokens.extend(accepted_tokens)
+            # --- Accept / reject ---
+            accepted_tokens, all_accepted = accept_reject(
+                draft_result=draft,
+                final_logits=final_logits,
+                temperature=config.temperature,
+            )
+            num_accepted_this_iter = sum(
+                1 for i, t in enumerate(accepted_tokens)
+                if i < len(draft.tokens) and t == draft.tokens[i]
+            )
+            total_accepted += num_accepted_this_iter
 
-        # If any token is EOT, stop.
-        if eot in accepted_tokens:
-            # Truncate at EOT (don't include EOT in the output text).
-            try:
-                eot_idx = generated_tokens.index(eot)
-                generated_tokens = generated_tokens[:eot_idx]
-            except ValueError:
-                pass
-            break
+            generated_tokens.extend(accepted_tokens)
 
-        # If all K draft tokens were accepted, we can also sample one bonus
-        # token from the final model's distribution at position K+1.
-        if all_accepted and len(draft.tokens) == k:
-            bonus_logits = final_logits[-1]  # logits predicting position after last draft
-            # Actually we need logits at position (prefix + all K drafts),
-            # which requires the logits *after* the last draft token.
-            # We get this "for free" from the forward pass — it's the logit
-            # at position (prefix_len - 1 + k) which predicts the next token.
-            # But score_with_final only returns K logits. Let's grab the bonus
-            # from a quick single-token forward on the final model.
-            pass  # Bonus token is optional; skip for now to keep it clean.
+            # Update cached lengths: the prefix tokens that are now
+            # "permanent" (accepted) should be kept in the caches.
+            # After acceptance the final cache has processed
+            #   current_prefix + draft_tokens (all of them),
+            # but we only want to keep up to current_prefix + accepted.
+            accepted_total_len = len(prefix) + len(generated_tokens)
 
-    # 4. Decode tokens to text.
+            # Truncate draft cache: the draft model processed
+            # current_prefix + all k drafted tokens.  We keep only up to
+            # the accepted boundary.
+            draft_processed = len(current_prefix) + len(draft.tokens)
+            if draft_processed > accepted_total_len:
+                _truncate_kv_cache(draft_kv_cache, accepted_total_len)
+            draft_cached_len = accepted_total_len
+
+            # Truncate final cache: score_with_final fed
+            # new_prefix + draft_tokens through the decoder.
+            # The cache now has len(current_prefix) + len(draft_tokens) entries.
+            # Keep only up to accepted boundary.
+            final_processed = len(current_prefix) + len(draft.tokens)
+            if final_processed > accepted_total_len:
+                _truncate_kv_cache(final_kv_cache, accepted_total_len)
+            final_cached_len = accepted_total_len
+
+            # EOT check.
+            if eot in accepted_tokens:
+                try:
+                    eot_idx = generated_tokens.index(eot)
+                    generated_tokens = generated_tokens[:eot_idx]
+                except ValueError:
+                    pass
+                break
+
+            # Bonus token: when all K drafts are accepted, the final model
+            # already computed logits predicting the token *after* the last
+            # draft position — grab it for free.
+            if all_accepted and len(draft.tokens) == k:
+                # final_logits has K rows — but that's logits *predicting*
+                # each draft token.  We need logits *after* the last draft,
+                # which is logits[0, -1] from the full forward pass output.
+                # score_with_final doesn't return it, so issue a cheap
+                # single-token forward for the bonus.
+                last_token = accepted_tokens[-1]
+                bonus_tensor = torch.tensor(
+                    [[last_token]], dtype=torch.long, device=device
+                )
+                bonus_logits_raw = model_pair.final.decoder(
+                    bonus_tensor, encoder_output_final, kv_cache=final_kv_cache
+                )
+                bonus_logits = bonus_logits_raw[0, -1]
+                _apply_logit_filters(
+                    bonus_logits,
+                    accepted_total_len,
+                    sample_begin,
+                    suppress_ids,
+                    tokenizer,
+                    top_p=config.top_p,
+                )
+                bonus_token_id = _sample_token(bonus_logits, config.temperature)
+                generated_tokens.append(bonus_token_id)
+
+                # Update caches to reflect the bonus token.
+                bonus_total_len = len(prefix) + len(generated_tokens)
+                # Draft cache doesn't have the bonus — feed it.
+                bonus_draft_tensor = torch.tensor(
+                    [[bonus_token_id]], dtype=torch.long, device=device
+                )
+                model_pair.draft.decoder(
+                    bonus_draft_tensor, encoder_output_draft, kv_cache=draft_kv_cache
+                )
+                draft_cached_len = bonus_total_len
+                final_cached_len = bonus_total_len
+
+                if bonus_token_id == eot:
+                    generated_tokens.pop()  # don't include EOT in output
+                    break
+
+    finally:
+        # 5. Remove hooks to avoid memory leaks.
+        for hook in draft_hooks:
+            hook.remove()
+        for hook in final_hooks:
+            hook.remove()
+
+    # 6. Decode tokens to text.
     text = tokenizer.decode(generated_tokens).strip()
 
     logger.info(
