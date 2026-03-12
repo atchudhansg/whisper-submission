@@ -84,6 +84,10 @@ class SpeculativeWhisper:
         max_tokens: int = 200,
         batch_size: int = 1,
         use_speculative: bool = True,
+        draft_k: Optional[int] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        sampling_strategy: Optional[str] = None,
     ) -> Union[str, List[str]]:
         """Transcribe one or more audio files.
 
@@ -93,6 +97,10 @@ class SpeculativeWhisper:
             batch_size: Number of files to decode in each batch.
             use_speculative: If True, use speculative decoding.
                 If False, fall back to standard Large V3 greedy decoding.
+            draft_k: Number of draft tokens per iteration (overrides config).
+            temperature: Sampling temperature (overrides config). 0.0 = greedy.
+            top_p: Nucleus sampling probability mass (overrides config).
+            sampling_strategy: "greedy" or "top_p" (overrides config).
 
         Returns:
             A single transcription string (if one file given) or a list of
@@ -105,8 +113,18 @@ class SpeculativeWhisper:
         single_input = isinstance(audio, (str, Path))
         paths = [audio] if single_input else list(audio)
 
-        # Override max_tokens in a per-call config copy.
-        call_config = self.config.model_copy(update={"max_tokens": max_tokens})
+        # Build per-call config overrides.
+        overrides = {"max_tokens": max_tokens}
+        if draft_k is not None:
+            overrides["draft_k"] = draft_k
+        if temperature is not None:
+            overrides["temperature"] = temperature
+        if top_p is not None:
+            overrides["top_p"] = top_p
+        if sampling_strategy is not None:
+            overrides["sampling_strategy"] = sampling_strategy
+
+        call_config = self.config.model_copy(update=overrides)
 
         results: List[str] = []
 

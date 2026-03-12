@@ -20,16 +20,40 @@ pip install -e ".[dev]"
 
 ### Usage
 
+**Python API (single file):**
 ```python
 from speculative_whisper import SpeculativeWhisper
 
 sw = SpeculativeWhisper(draft_model="tiny", final_model="large-v3", device="cuda")
+text = sw.transcribe("audio.wav")
+print(text)
+```
 
-audio_files = ["audio1.wav", "audio2.wav"]
-outputs = sw.transcribe(audio_files, max_tokens=200, batch_size=2)
+**Python API (batch transcription):**
+```python
+audio_files = ["audio1.wav", "audio2.wav", "audio3.wav"]
+texts = sw.transcribe(audio_files, batch_size=2, draft_k=8)
 
-for audio, text in zip(audio_files, outputs):
+for audio, text in zip(audio_files, texts):
     print(f"{audio}: {text}")
+```
+
+**Runtime config overrides:**
+```python
+# Baseline (no speculative decoding)
+baseline_text = sw.transcribe("audio.wav", use_speculative=False)
+
+# Greedy decoding with more draft tokens
+greedy_text = sw.transcribe("audio.wav", draft_k=10, temperature=0.0)
+
+# Stochastic sampling
+stochastic_text = sw.transcribe(
+    "audio.wav",
+    draft_k=5,
+    sampling_strategy="top_p",
+    temperature=0.6,
+    top_p=0.9,
+)
 ```
 
 ### CLI
@@ -41,12 +65,80 @@ speculative-whisper --audio-dir ./samples/ --batch-size 4 --output results.json
 
 ### REST API
 
+Start the FastAPI server (models loaded once on startup):
+
 ```bash
-make serve
-# POST audio files to http://localhost:8000/transcribe
-curl -X POST http://localhost:8000/transcribe \
+# Option 1: Direct uvicorn
+uvicorn api.server:app --host 0.0.0.0 --port 8000
+
+# Option 2: Via Python
+python -m api.server
+
+# Option 3: With environment overrides
+WHISPER_DRAFT_MODEL=tiny WHISPER_FINAL_MODEL=large-v3 WHISPER_DEVICE=cuda \
+  uvicorn api.server:app --host 0.0.0.0 --port 8000
+```
+
+**Endpoints:**
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check — returns model status and config |
+| `/transcribe/single` | POST | Transcribe a single audio file |
+| `/transcribe` | POST | Transcribe multiple audio files (batch) |
+
+**Query parameters** (all endpoints):
+- `max_tokens` (int, default=200): Max tokens per segment
+- `use_speculative` (bool, default=true): Use speculative decoding
+- `draft_k` (int, optional): Override draft_k from config
+- `temperature` (float, optional): Override sampling temperature
+- `top_p` (float, optional): Override nucleus sampling p
+- `sampling_strategy` (str, optional): "greedy" or "top_p"
+
+**Examples:**
+
+```bash
+# Health check
+curl http://localhost:8000/health
+
+# Single file with config overrides
+curl -X POST "http://localhost:8000/transcribe/single?draft_k=8&temperature=0.0" \
+  -F "file=@audio.wav"
+
+# Batch transcription
+curl -X POST "http://localhost:8000/transcribe?batch_size=4&draft_k=5" \
   -F "files=@audio1.wav" \
-  -F "files=@audio2.wav"
+  -F "files=@audio2.wav" \
+  -F "files=@audio3.wav"
+
+# Without speculative decoding (baseline Large)
+curl -X POST "http://localhost:8000/transcribe/single?use_speculative=false" \
+  -F "file=@audio.wav"
+```
+
+**Python client example** (see [examples/api_client_example.py](examples/api_client_example.py)):
+
+```python
+import requests
+
+# Single file
+with open("audio.wav", "rb") as f:
+    response = requests.post(
+        "http://localhost:8000/transcribe/single",
+        files={"file": f},
+        params={"draft_k": 5, "temperature": 0.0},
+    )
+result = response.json()
+print(f"Text: {result['text']}, Latency: {result['latency_s']:.3f}s")
+
+# Batch
+files = [("files", open(f"audio{i}.wav", "rb")) for i in range(3)]
+response = requests.post(
+    "http://localhost:8000/transcribe",
+    files=files,
+    params={"batch_size": 2, "draft_k": 5},
+)
+results = response.json()
 ```
 
 ---
@@ -63,7 +155,30 @@ The output is **provably identical** to standard Large V3 decoding — this is e
 
 ## Configuration
 
-All parameters are configurable via `configs/default.yaml` or at runtime:
+All parameters are configurable via `configs/default.yaml`, at initialization, or at runtime:
+
+**At initialization:**
+```python
+sw = SpeculativeWhisper(
+    draft_model="tiny",
+    final_model="large-v3",
+    device="cuda",
+    draft_k=8,
+    temperature=0.0,
+)
+```
+
+**At runtime (per-call overrides):**
+```python
+# Override for a specific transcription call
+text = sw.transcribe(
+    "audio.wav",
+    draft_k=10,           # Use more draft tokens for this call
+    temperature=0.6,      # Switch to stochastic sampling
+    top_p=0.9,
+    sampling_strategy="top_p",
+)
+```
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -72,6 +187,8 @@ All parameters are configurable via `configs/default.yaml` or at runtime:
 | `device` | `auto` | `cuda`, `cpu`, or `auto` |
 | `draft_k` | `5` | Number of tokens to draft per iteration |
 | `temperature` | `0.0` | Sampling temperature (0 = greedy) |
+| `top_p` | `None` | Nucleus sampling probability mass (top-p) |
+| `sampling_strategy` | `greedy` | `"greedy"` or `"top_p"` |
 | `batch_size` | `1` | Number of audio files to process together |
 | `max_tokens` | `200` | Maximum tokens to generate |
 | `language` | `en` | Target language |
@@ -201,10 +318,11 @@ speculative_whisper/          # Core library
 └── cli.py                    # CLI entry point
 
 api/
-└── server.py                 # FastAPI REST interface
+└── server.py                 # FastAPI REST interface (production-ready)
 
-benchmarks/
-└── run_benchmark.py          # Benchmark runner
+examples/
+├── api_client_example.py     # REST API client demonstration
+└── benchmark.py              # Full dataset evaluation script
 
 tests/
 ├── test_decoding.py          # Decoding unit tests
