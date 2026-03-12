@@ -373,9 +373,18 @@ def speculative_decode(
     eot = tokenizer.eot
     device = model_pair.device
 
-    # 1. Encode audio once with the final model's encoder.
+    # 1. Encode audio once per model.
+    # Each model's decoder cross-attends to its *own* encoder output, since
+    # the draft (Tiny, d_model=384) and final (Large, d_model=1280) have
+    # different embedding dimensions and cannot share encoder outputs.
     mel = mel.to(device=device, dtype=model_pair.dtype)
-    encoder_output = model_pair.final.encoder(mel)  # (1, 1500, d_model)
+    encoder_output_final = model_pair.final.encoder(mel)   # (1, 1500, d_final)
+    # Reuse the final encoder output when both models are the same architecture
+    # (e.g. tiny+tiny in tests), otherwise encode separately.
+    if model_pair.draft.dims.n_audio_state == model_pair.final.dims.n_audio_state:
+        encoder_output_draft = encoder_output_final
+    else:
+        encoder_output_draft = model_pair.draft.encoder(mel)  # (1, 1500, d_draft)
 
     # 2. Build initial token prefix and logit filters.
     prefix = _get_initial_tokens(model_pair, config)
@@ -406,7 +415,7 @@ def speculative_decode(
         # Step 1: Draft — sample k tokens from the draft model.
         draft = draft_step(
             draft_model=model_pair.draft,
-            encoder_output=encoder_output,
+            encoder_output=encoder_output_draft,
             prefix=current_prefix,
             k=k,
             temperature=config.temperature,
@@ -421,7 +430,7 @@ def speculative_decode(
         # Step 2: Verify — score all draft tokens with the final model.
         final_logits = score_with_final(
             final_model=model_pair.final,
-            encoder_output=encoder_output,
+            encoder_output=encoder_output_final,
             prefix=current_prefix,
             draft_tokens=draft.tokens,
         )
